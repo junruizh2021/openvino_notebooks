@@ -1,0 +1,8 @@
+# 构建产物与日志
+*.log
+kernel.errors.txt
+# 不需要打包进镜像
+*.ipynb
+README.md
+.git
+.gitignore

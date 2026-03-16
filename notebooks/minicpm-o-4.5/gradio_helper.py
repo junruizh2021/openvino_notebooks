@@ -15,6 +15,7 @@ Adapted for direct OpenVINO model calls (no client / server split).
 """
 
 import re
+import tempfile
 import threading
 import traceback
 from pathlib import Path
@@ -23,6 +24,7 @@ import gradio as gr
 import librosa
 import numpy as np
 import requests
+import soundfile as sf
 from gradio.data_classes import FileData
 from PIL import Image
 
@@ -210,8 +212,18 @@ def _history_to_msgs(
 # ──────────────────────────── make_demo ──────────────────────────────────
 
 
-def make_demo(ov_model):
-    """Build and return a ``gr.Blocks`` demo wired to *ov_model*."""
+def make_demo(ov_model, assets_dir: Path = None):
+    """Build and return a ``gr.Blocks`` demo wired to *ov_model*.
+
+    Args:
+        ov_model: OpenVINO MiniCPM-o model instance
+        assets_dir: Path to assets directory (audio/video examples).
+                    Defaults to ASSETS_DIR (script directory / assets).
+    """
+    if assets_dir is not None:
+        demo_assets = Path(assets_dir)
+    else:
+        demo_assets = ASSETS_DIR
 
     stop_ev = threading.Event()
 
@@ -241,12 +253,12 @@ def make_demo(ov_model):
 
         return hist, gr.MultimodalTextbox(value=None)
 
-    def _bot(hist, think, stream, max_tok, temp, tp, tk, rp, sys_prompt):
-        """Generate an assistant response (streaming or blocking)."""
-        print(f"[bot] history_len={len(hist)}, think={think}, stream={stream}")
+    def _bot(hist, think, stream, tts, max_tok, temp, tp, tk, rp, sys_prompt):
+        """Generate an assistant response (streaming or blocking), optionally with TTS audio."""
+        print(f"[bot] history_len={len(hist)}, think={think}, stream={stream}, tts={tts}")
         if not hist:
             print("[bot] empty history, skipping")
-            yield hist
+            yield hist, None
             return
 
         stop_ev.clear()
@@ -258,7 +270,7 @@ def make_demo(ov_model):
             print(f"[bot] _history_to_msgs error: {exc}")
             traceback.print_exc()
             hist.append({"role": "assistant", "content": f"⚠️ {exc}"})
-            yield hist
+            yield hist, None
             return
 
         print(f"[bot] msgs count={len(msgs)}, last_role={msgs[-1].get('role') if msgs else 'N/A'}")
@@ -270,46 +282,137 @@ def make_demo(ov_model):
 
         if not msgs or msgs[-1].get("role") != "user":
             print("[bot] no user message found, skipping")
-            yield hist
+            yield hist, None
             return
 
         _reset(ov_model)
 
-        kw = dict(
-            msgs=msgs,
-            max_new_tokens=int(max_tok),
-            do_sample=(temp > 0),
-            temperature=max(float(temp), 0.01),
-            top_p=float(tp),
-            top_k=int(tk),
-            repetition_penalty=float(rp),
-            enable_thinking=bool(think),
-            stream=bool(stream),
-        )
+        audio_path = None
 
-        try:
-            if stream:
-                streamer = ov_model.chat(**kw)
+        if tts:
+            # TTS 模式：使用 streaming_prefill + streaming_generate 生成文本和语音
+            # chat() 方法不支持 generate_audio，必须走 streaming API
+            import librosa
+            import torch
+            import soundfile as sf
+
+            session_id = "gradio_tts"
+            ref_audio = None
+
+            # 加载参考音频用于声音克隆
+            ref_audio_path = demo_assets / "system_ref_audio.wav"
+            if ref_audio_path.exists():
+                try:
+                    ref_audio, _ = librosa.load(str(ref_audio_path), sr=16000, mono=True)
+                except Exception as e:
+                    print(f"[bot] Failed to load ref audio: {e}")
+
+            try:
+                # 重置会话和声音缓存
+                ov_model.reset_session(reset_token2wav_cache=(ref_audio is not None))
+                if ref_audio is not None:
+                    ov_model.init_token2wav_cache(prompt_speech_16k=ref_audio)
+
+                # 系统提示（含参考音频）
+                if ref_audio is not None:
+                    sys_msg = {
+                        "role": "system",
+                        "content": [
+                            "Clone the voice in the provided audio prompt.",
+                            ref_audio,
+                            "You are a helpful assistant. Answer clearly and naturally.",
+                        ],
+                    }
+                    ov_model.streaming_prefill(
+                        session_id=session_id,
+                        msgs=[sys_msg],
+                        omni_mode=False,
+                        is_last_chunk=True,
+                    )
+
+                # 逐条预填充对话历史（最后一条 user 消息标记 is_last_chunk）
+                for i, entry in enumerate(msgs):
+                    is_last = (i == len(msgs) - 1)
+                    ov_model.streaming_prefill(
+                        session_id=session_id,
+                        msgs=[entry],
+                        omni_mode=False,
+                        is_last_chunk=is_last,
+                    )
+
+                # 流式生成文本+音频，边生成边 yield（streaming 播放）
+                iter_gen = ov_model.streaming_generate(
+                    session_id=session_id,
+                    generate_audio=True,
+                    use_tts_template=True,
+                    enable_thinking=bool(think),
+                    do_sample=(temp > 0),
+                    max_new_tokens=int(max_tok),
+                    temperature=max(float(temp), 0.01),
+                    top_p=float(tp),
+                    top_k=int(tk),
+                    repetition_penalty=float(rp),
+                )
+
+                SAMPLE_RATE = 24000
+                text = ""
+                has_audio = False
+                # 先占位 assistant 消息，后续逐步更新文本
                 hist.append({"role": "assistant", "content": ""})
-                for chunk in streamer:
+
+                for wav_chunk, text_chunk in iter_gen:
                     if stop_ev.is_set():
                         break
-                    hist[-1]["content"] += _clean_tts(chunk)
-                    yield hist
-            else:
-                ans = ov_model.chat(**kw)
-                if isinstance(ans, str):
-                    ans = _clean_tts(ans)
-                hist.append({"role": "assistant", "content": ans})
-                yield hist
-        except Exception:
-            hist.append(
-                {
+                    text += text_chunk
+                    hist[-1]["content"] = _clean_tts(text)
+                    # 将 wav_chunk [1, samples] 转为 float32 mono 数组并立即 yield
+                    chunk_np = wav_chunk[0].cpu().numpy().astype("float32")
+                    has_audio = True
+                    yield hist, (SAMPLE_RATE, chunk_np)
+
+                if not has_audio:
+                    print("[bot] TTS: no audio chunks generated")
+                    yield hist, None
+
+            except Exception:
+                hist.append({
+                    "role": "assistant",
+                    "content": f"⚠️ TTS Generation error:\n```\n{traceback.format_exc()}\n```",
+                })
+                yield hist, None
+        else:
+            kw = dict(
+                msgs=msgs,
+                max_new_tokens=int(max_tok),
+                do_sample=(temp > 0),
+                temperature=max(float(temp), 0.01),
+                top_p=float(tp),
+                top_k=int(tk),
+                repetition_penalty=float(rp),
+                enable_thinking=bool(think),
+                stream=bool(stream),
+            )
+            try:
+                if stream:
+                    streamer = ov_model.chat(**kw)
+                    hist.append({"role": "assistant", "content": ""})
+                    for chunk in streamer:
+                        if stop_ev.is_set():
+                            break
+                        hist[-1]["content"] += _clean_tts(chunk)
+                        yield hist, None
+                else:
+                    ans = ov_model.chat(**kw)
+                    if isinstance(ans, str):
+                        ans = _clean_tts(ans)
+                    hist.append({"role": "assistant", "content": ans})
+                    yield hist, None
+            except Exception:
+                hist.append({
                     "role": "assistant",
                     "content": f"⚠️ Generation error:\n```\n{traceback.format_exc()}\n```",
-                }
-            )
-            yield hist
+                })
+                yield hist, None
 
     def _stop():
         stop_ev.set()
@@ -319,7 +422,7 @@ def make_demo(ov_model):
         while hist and hist[-1].get("role") == "assistant":
             hist.pop()
         if not hist:
-            yield hist
+            yield hist, None
             return
         yield from _bot(hist, *args)
 
@@ -391,7 +494,7 @@ def make_demo(ov_model):
     chat_examples = [
         {"text": "Hello! What can you do?", "display_text": "👋 Say hello"},
     ]
-    _audio = ASSETS_DIR / "system_ref_audio.wav"
+    _audio = demo_assets / "system_ref_audio.wav"
     if _audio.exists():
         chat_examples.append(
             {
@@ -424,10 +527,19 @@ def make_demo(ov_model):
                     sources=["upload", "microphone"],
                 )
 
+                audio_out = gr.Audio(
+                    label="🔊 语音回复",
+                    streaming=True,
+                    autoplay=True,
+                    interactive=False,
+                    visible=True,
+                )
+
                 with gr.Accordion("⚙️ Settings", open=False):
                     with gr.Row():
                         c_think = gr.Checkbox(label="Thinking Mode", value=False)
                         c_stream = gr.Checkbox(label="Streaming", value=True)
+                        c_tts = gr.Checkbox(label="🔊 Generate Audio (TTS)", value=False)
                     with gr.Row():
                         c_tok = gr.Slider(
                             64,
@@ -470,7 +582,7 @@ def make_demo(ov_model):
                 _ex_rows: list[list] = []
                 _img1 = Path(__file__).parent / "example_bee.jpg"
                 _img2 = Path(__file__).parent / "example_baklava.png"
-                _audio_ex = ASSETS_DIR / "system_ref_audio.wav"
+                _audio_ex = demo_assets / "system_ref_audio.wav"
                 if _img1.exists():
                     _ex_rows.append([{"text": "What is on the flower? Describe in detail.", "files": [str(_img1)]}])
                 if _img2.exists():
@@ -492,6 +604,7 @@ def make_demo(ov_model):
                 gen = [
                     c_think,
                     c_stream,
+                    c_tts,
                     c_tok,
                     c_temp,
                     c_tp,
@@ -506,12 +619,12 @@ def make_demo(ov_model):
                 ).then(
                     _bot,
                     [chatbot] + gen,
-                    chatbot,
+                    [chatbot, audio_out],
                 )
                 # Stop button (built into MultimodalTextbox)
                 msg.stop(_stop, [], [])
 
-                btn_regen.click(_regen, [chatbot] + gen, chatbot)
+                btn_regen.click(_regen, [chatbot] + gen, [chatbot, audio_out])
                 btn_clear.click(_clear, [], chatbot)
 
             # ═══════════════════ Few-Shot ═══════════════════════════════

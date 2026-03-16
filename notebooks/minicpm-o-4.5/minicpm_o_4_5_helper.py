@@ -3571,8 +3571,16 @@ class OVMiniCPMO:
                 prompt = cur_contents
             add_special_tokens = False
 
-        # Pad first audio chunk if needed
-        if is_not_system_prefill and len(audios) > 0 and self.audio_chunk_idx == 0:
+        # In omni_mode (real-time duplex streaming), audio is sent in small chunks and
+        # must be processed incrementally. In non-omni mode (Gradio chat/TTS), the user
+        # provides a complete audio recording, so batch processing must be used.
+        # Using online_streaming=True for a complete recording causes a shape mismatch:
+        # the placeholder is sized for the full audio, but the streaming mel processor
+        # only emits the first 1-second chunk → tensor size error.
+        use_streaming_audio = is_not_system_prefill and omni_mode
+
+        # Pad first audio chunk if needed (only in streaming mode)
+        if use_streaming_audio and len(audios) > 0 and self.audio_chunk_idx == 0:
             assert len(audios) == 1, f"streaming mode only supports single audio, currently {len(audios)}"
             first_chunk_samples = int(self.FIRST_CHUNK_MS * self.SAMPLE_RATE / 1000)
             if len(audios[0]) < first_chunk_samples:
@@ -3590,12 +3598,12 @@ class OVMiniCPMO:
             max_length=None,
             sampling_rate=16000,
             add_special_tokens=add_special_tokens,
-            online_streaming=is_not_system_prefill,
+            online_streaming=use_streaming_audio,
             audio_chunk_idx=self.audio_chunk_idx,
             is_last_chunk=is_last_chunk,
         )
 
-        if len(audios) > 0 and is_not_system_prefill:
+        if len(audios) > 0 and use_streaming_audio:
             self.audio_chunk_idx += 1
 
         # Get embeddings
@@ -3603,7 +3611,7 @@ class OVMiniCPMO:
         inputs_embeds = self.get_omni_embedding(
             model_inputs,
             input_embeddings=model_inputs["inputs_embeds"],
-            stream_input=is_not_system_prefill,
+            stream_input=use_streaming_audio,
         )
 
         # Build attention mask for accumulated KV cache

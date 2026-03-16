@@ -6,6 +6,23 @@
 
 [MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) is the latest and most capable model in the MiniCPM-o series — an end-to-end omnimodal model with **9B parameters** built on **SigLip2 + Whisper-medium + CosyVoice2 + Qwen3-8B**. It achieves Gemini 2.5 Flash level performance on vision-language benchmarks with only 9B parameters.
 
+## Quick Start
+
+# 多轮对话
+python minicpm_o_4_5_demo.py --demo multi_turn
+
+# 音频识别（ASR）
+python minicpm_o_4_5_demo.py --demo asr
+
+# 音频分析（说话人分析 + 场景标注）
+python minicpm_o_4_5_demo.py --demo audio
+
+# 半双工 Omni（视频+音频理解，生成语音回复）
+python minicpm_o_4_5_demo.py --demo halfduplex_chat
+
+# 启动 Gradio 交互界面
+python minicpm_o_4_5_demo.py --demo gradio
+
 ## Key Features
 
 - **Leading Visual Capability** — 77.6 on OpenCompass, surpassing GPT-4o and Gemini 2.0 Pro
@@ -55,4 +72,29 @@ The image below illustrates example of input prompt and model answer.
 This is a self-contained example that relies solely on its own code.
 We recommend running the notebook in a virtual environment. You only need a Jupyter server to start.
 For details, please refer to [Installation Guide](../../README.md).
+
+### Docker 构建与运行
+
+基于 Ubuntu 24.04 的 Dockerfile 已提供，安装上述 pip 依赖并包含演示程序及依赖脚本。
+
+**构建前**将 OpenVINO 模型目录放入构建上下文（例如复制到本目录下）：
+
+```bash
+cp -r /home/nvme-data/AI-models/MiniCPM-o-4_5-OV ./MiniCPM-o-4_5-OV
+```
+
+在仓库根目录执行构建（上下文为 `notebooks/minicpm-o-4.5`）：
+
+```bash
+docker build -t minicpm-o-45-demo -f notebooks/minicpm-o-4.5/Dockerfile notebooks/minicpm-o-4.5
+```
+
+运行 Gradio 界面（映射端口 7860）：
+
+```bash
+docker run -it --rm -p 7860:7860 minicpm-o-45-demo
+```
+
+如需 GPU，请安装 nvidia-container-toolkit 后使用 `--gpus all`。
+
 <img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=5b5a4db0-7875-4bfb-bdbd-01698b5b1a77&file=notebooks/minicpm-o-4.5/README.md" />
