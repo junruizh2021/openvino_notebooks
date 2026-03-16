@@ -7441,7 +7441,10 @@ class OVFlow:
         # Load OpenVINO flow estimator model (DiT)
         flow_est_path = self.model_dir / FLOW_ESTIMATOR_NAME
         print(f"⌛ Loading OpenVINO Flow estimator model from {flow_est_path}...")
-        self.flow_estimator = core.compile_model(str(flow_est_path), device)
+        # PERFORMANCE_HINT=LATENCY makes the GPU plugin select conservative kernel
+        # implementations with smaller work group sizes, improving hardware compatibility.
+        _gpu_config = {"PERFORMANCE_HINT": "LATENCY"} if device.upper() not in ("CPU",) else {}
+        self.flow_estimator = core.compile_model(str(flow_est_path), device, _gpu_config)
         print(f"✅ Flow estimator model loaded")
 
         # Pre-generate random noise for deterministic inference
@@ -7538,6 +7541,12 @@ class OVFlow:
 
         return h, spks
 
+    # Mel-length alignment for GPU kernel work group size compatibility.
+    # Some GPU drivers raise CL_INVALID_WORK_GROUP_SIZE (-54) when the runtime
+    # mel_len is not a multiple of this value.  Inputs are padded before
+    # inference and the output is trimmed back to the original length.
+    _GPU_MEL_ALIGN = 64
+
     def _run_flow_estimator(self, x, mask, mu, t, spks, cond):
         """
         Run flow estimator (DiT) model for one denoising step.
@@ -7545,7 +7554,19 @@ class OVFlow:
         Returns:
             Estimated velocity field (batch, output_size, mel_len)
         """
-        # OpenVINO directly accepts torch.Tensor
+        mel_len = x.shape[2]
+
+        # Pad mel_len to a multiple of _GPU_MEL_ALIGN so the OpenCL kernel
+        # work group size always divides evenly, avoiding CL_INVALID_WORK_GROUP_SIZE.
+        align = self._GPU_MEL_ALIGN
+        padded_len = ((mel_len + align - 1) // align) * align
+        if padded_len != mel_len:
+            pad = padded_len - mel_len
+            x = torch.nn.functional.pad(x, (0, pad))
+            mask = torch.nn.functional.pad(mask, (0, pad), value=0.0)
+            mu = torch.nn.functional.pad(mu, (0, pad))
+            cond = torch.nn.functional.pad(cond, (0, pad))
+
         inputs = {
             "x": x,
             "mask": mask,
@@ -7555,7 +7576,10 @@ class OVFlow:
             "cond": cond,
         }
         result = self.flow_estimator(inputs)
-        return torch.from_numpy(result[0].copy())
+        output = torch.from_numpy(result[0].copy())
+
+        # Trim padded columns from the output to restore original mel_len
+        return output[:, :, :mel_len]
 
     def _solve_euler(self, z, t_span, mu, mask, spks, cond):
         """
@@ -7707,7 +7731,8 @@ class OVHiFT:
         if self.hift_input_len > 0:
             model.reshape([1, 80, self.hift_input_len])
             print(f"  📐 Reshaped HiFT to fixed input: [1, 80, {self.hift_input_len}]")
-        self.hift = core.compile_model(model, device)
+        _gpu_config = {"PERFORMANCE_HINT": "LATENCY"} if device.upper() not in ("CPU",) else {}
+        self.hift = core.compile_model(model, device, _gpu_config)
         print(f"✅ HiFT model loaded on {device}")
 
         # ISTFT parameters (matching HiFTGenerator defaults)
@@ -7753,18 +7778,24 @@ class OVHiFT:
         else:
             mel_input = speech_feat
 
-        # Fixed shape mode: pad input to target length, trim output after
         original_len = mel_input.shape[2]
         if self.hift_input_len > 0:
+            # Fixed shape mode: pad to the compiled model shape, trim output after
             target_len = self.hift_input_len
             if original_len < target_len:
-                # Pad with zeros on the right
                 pad_len = target_len - original_len
                 mel_input = np.pad(mel_input, ((0, 0), (0, 0), (0, pad_len)), mode="constant", constant_values=0)
             else:
-                # Truncate if longer than target (shouldn't normally happen)
                 mel_input = mel_input[:, :, :target_len]
                 original_len = target_len
+        else:
+            # Dynamic shape mode: pad to multiple of 64 to avoid
+            # CL_INVALID_WORK_GROUP_SIZE on GPUs with small max work group size.
+            align = 64
+            padded_len = ((original_len + align - 1) // align) * align
+            if padded_len != original_len:
+                pad_len = padded_len - original_len
+                mel_input = np.pad(mel_input, ((0, 0), (0, 0), (0, pad_len)), mode="constant", constant_values=0)
 
         # Run OpenVINO inference - output is (batch, n_fft+2, time)
         start_time = time.time()
@@ -7780,8 +7811,11 @@ class OVHiFT:
         speech = self._istft(magnitude, phase)
         speech = torch.clamp(speech, -self.audio_limit, self.audio_limit)
 
-        # Trim output to match original input length
+        # Trim output back to original mel length
         if self.hift_input_len > 0 and original_len < self.hift_input_len:
+            original_samples = original_len * self.mel_to_samples_ratio
+            speech = speech[:, :original_samples]
+        elif self.hift_input_len == 0 and mel_input.shape[2] > original_len:
             original_samples = original_len * self.mel_to_samples_ratio
             speech = speech[:, :original_samples]
 

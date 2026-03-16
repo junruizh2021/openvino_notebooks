@@ -234,7 +234,7 @@ def run_benchmark(name: str, ov_model, warmup_fn, bench_fn, num_runs: int):
 # 场景 1：纯文本输入
 # ---------------------------------------------------------------------------
 def benchmark_text_only(ov_model, num_runs: int):
-    question = "请简要介绍量子计算的基本原理。"
+    question = "介绍一下你自己吧"
     chat_kwargs = {
         "use_tts_template": False,
         "max_new_tokens": 256,
@@ -274,7 +274,7 @@ def benchmark_text_image(ov_model, num_runs: int):
         print(f"  请确认 {ASSETS_DIR} 下存在 fossil.png 或 highway.png")
         return
 
-    question = "Describe what you see in this image in detail."
+    question = "介绍图片中的内容"
     chat_kwargs = {
         "use_tts_template": False,
         "max_new_tokens": 256,
@@ -308,7 +308,7 @@ def benchmark_text_audio(ov_model, num_runs: int):
     duration = len(audio_input) / 16000
     print(f"  使用音频：{audio_path}（时长 {duration:.1f}s）")
 
-    task_prompt = "Please transcribe the audio content."
+    task_prompt = "介绍音频中的内容"
     chat_kwargs = {
         "use_tts_template": True,
         "max_new_tokens": 256,
@@ -345,7 +345,7 @@ def benchmark_text_audio_output(ov_model, num_runs: int, play_audio: bool = Fals
     ref_audio, _ = librosa.load(str(ref_audio_path), sr=16000, mono=True)
     print(f"  使用参考音频：{ref_audio_path}")
 
-    question = "请用中文回答：太阳系有哪些行星？"
+    question = "介绍一下你自己吧"
     output_audio_path = str(SCRIPT_DIR / "benchmark_tts_output.wav")
     session_id = "benchmark_tts"
 

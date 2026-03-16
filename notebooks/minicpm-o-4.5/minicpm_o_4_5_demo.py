@@ -8,7 +8,7 @@ MiniCPM-o 4.5 Multimodal Model with OpenVINO
         "nncf>=2.16" "Pillow" "librosa" "soundfile" "gradio==6.0.0" \
         "accelerate" "einops" "onnxruntime" "hyperpyyaml" \
         "minicpmo-utils>=1.0.5" \
-        --extra-index-url https://download.pytorch.org/whl/cpu
+        --extra-index-url https://download.pytorch.org/whl/cpu --break-system-packages
 """
 
 import argparse
