@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniCPM-o 4.5 — Omni Live</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #080c10;
+  --panel: #101820;
+  --panel-2: #0d141b;
+  --line: rgba(120, 207, 255, 0.26);
+  --line-strong: rgba(120, 207, 255, 0.55);
+  --text: #e6f4ff;
+  --muted: #8496a8;
+  --cyan: #38d5ff;
+  --green: #20e59f;
+  --amber: #ffb454;
+  --red: #ff5d73;
+}
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--text);
+  min-height: 100vh;
+  padding: 1.6rem clamp(1rem, 3vw, 2.5rem);
+  background:
+    linear-gradient(rgba(56, 213, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 213, 255, 0.05) 1px, transparent 1px),
+    radial-gradient(circle at 50% 0%, rgba(32, 229, 159, 0.12), transparent 34rem),
+    var(--bg);
+  background-size: 32px 32px, 32px 32px, auto, auto;
+}
+h1 {
+  width: min(1280px, 100%);
+  margin: 0 auto 1.1rem;
+  color: var(--text);
+  font-size: 1.2rem;
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+h1::before {
+  content: "";
+  display: inline-block;
+  width: 0.68rem;
+  height: 0.68rem;
+  margin-right: 0.6rem;
+  border-radius: 999px;
+  background: var(--green);
+  box-shadow: 0 0 18px rgba(32, 229, 159, 0.75);
+  vertical-align: 0.02rem;
+}
+button { border: 1px solid var(--line); font-size: 0.95rem; cursor: pointer; transition: transform 0.15s, background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--line-strong); box-shadow: 0 0 22px rgba(56, 213, 255, 0.13); }
+.app-shell { display: grid; grid-template-columns: minmax(0, 1fr) minmax(292px, 350px); gap: 1rem; width: min(1280px, 100%); height: calc(100vh - 5.2rem); min-height: 590px; max-height: 790px; margin: 0 auto; align-items: stretch; }
+.camera-panel {
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  overflow: hidden;
+  padding: 0;
+  background: rgba(10, 16, 22, 0.86);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.camera-stage { width: 100%; max-width: none; background: linear-gradient(180deg, rgba(17, 27, 37, 0.98), rgba(9, 15, 21, 0.98)); padding: 1rem; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 0.85rem; position: relative; }
+.camera-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: 18px;
+  background: linear-gradient(90deg, var(--cyan), transparent 22%, transparent 78%, var(--green));
+  opacity: 0.22;
+  height: 1px;
+}
+.status-row { display: flex; align-items: center; gap: 0.65rem; color: var(--muted); font-size: 0.78rem; line-height: 1; text-transform: uppercase; }
+.status-item { display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap; padding: 0.45rem 0.62rem; border: 1px solid rgba(132, 150, 168, 0.2); border-radius: 999px; background: rgba(255,255,255,0.025); }
+.indicator { display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.16); }
+.indicator.off { background: #526071; box-shadow: none; }
+.indicator.on { background: var(--green); box-shadow: 0 0 12px rgba(32, 229, 159, 0.85); }
+.preview-wrap { position: relative; width: 100%; min-height: 320px; border-radius: 14px; overflow: hidden; background: #020509; border: 1px solid rgba(120, 207, 255, 0.22); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035); }
+.preview-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px);
+  background-size: 100% 5px;
+  opacity: 0.13;
+  z-index: 1;
+}
+video, canvas { width: 100%; background: #000; }
+#video-preview { display: block; width: 100%; height: 100%; min-height: 320px; max-height: 455px; object-fit: cover; }
+.preview-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 0.78rem; text-transform: uppercase; pointer-events: none; }
+.controls { display: grid; grid-template-columns: 54px 54px minmax(74px, 86px); gap: 0.7rem; justify-content: center; align-items: center; min-height: 66px; padding: 0.3rem 0 0; }
+.icon-button { width: 48px; height: 48px; border-radius: 12px; background: rgba(255,255,255,0.035); color: var(--text); display: inline-flex; align-items: center; justify-content: center; justify-self: center; padding: 0; }
+.icon-button svg { width: 25px; height: 25px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#btn-session { width: 62px; height: 62px; border-radius: 16px; background: rgba(32, 229, 159, 0.12); border-color: rgba(32, 229, 159, 0.58); color: var(--green); display: inline-flex; align-items: center; justify-content: center; justify-self: center; padding: 0; box-shadow: 0 0 28px rgba(32, 229, 159, 0.12); }
+#btn-session svg { width: 40px; height: 40px; fill: var(--green); stroke: var(--green); stroke-width: 1.5; }
+#btn-session.stop { background: rgba(255, 93, 115, 0.12); border-color: rgba(255, 93, 115, 0.55); color: var(--red); }
+#btn-session.stop svg { fill: var(--red); stroke: var(--red); }
+.side-panel { background: rgba(10, 16, 22, 0.92); border: 1px solid var(--line); border-radius: 18px; min-height: 0; padding: 1rem 0.8rem 0.7rem; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255,255,255,0.04); }
+.side-title { text-align: left; font-size: 0.88rem; color: var(--text); margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0; }
+.panel-body { min-height: 0; overflow: hidden; }
+.panel-page { height: 100%; display: none; min-height: 0; }
+.panel-page.active { display: flex; flex-direction: column; overflow: hidden; }
+.transcript { padding: 0 0.15rem; font-size: 0.9rem; overflow-y: auto; display: flex; flex-direction: column; gap: 0.7rem; min-height: 0; flex: 1 1 auto; scrollbar-gutter: stable; }
+.bubble { max-width: 90%; padding: 0.58rem 0.68rem; border-radius: 10px; line-height: 1.42; word-wrap: break-word; font-size: 0.78rem; border: 1px solid rgba(255,255,255,0.06); }
+.bubble.user { align-self: flex-end; background: rgba(56, 213, 255, 0.13); color: #dff7ff; border-color: rgba(56, 213, 255, 0.25); border-bottom-right-radius: 3px; }
+.bubble.assistant { align-self: flex-start; background: rgba(32, 229, 159, 0.09); color: #bfffe8; border-color: rgba(32, 229, 159, 0.22); border-bottom-left-radius: 3px; }
+.bubble .role { font-size: 0.62rem; color: var(--muted); margin-bottom: 0.18rem; text-transform: uppercase; }
+.bubble.user .role { text-align: right; color: #9bdff2; }
+.bubble .perf { margin-top: 0.42rem; padding-top: 0.34rem; border-top: 1px solid rgba(255,255,255,0.08); color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.62rem; line-height: 1.35; }
+.status { padding: 0.75rem; background: rgba(3, 7, 12, 0.62); color: #c7eeff; border: 1px solid rgba(120, 207, 255, 0.16); border-radius: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.72rem; line-height: 1.5; flex: 1 1 auto; min-height: 0; overflow-y: auto; white-space: pre-wrap; scrollbar-gutter: stable; }
+.settings { display: grid; grid-template-columns: 1fr; gap: 0.6rem; overflow-y: auto; min-height: 0; flex: 1 1 auto; padding: 0 0.15rem 0.5rem; scrollbar-gutter: stable; }
+.settings label { display: block; font-size: 0.68rem; color: var(--muted); margin-bottom: 0.22rem; text-transform: uppercase; }
+.settings input, .settings select, textarea { width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(120, 207, 255, 0.2); border-radius: 9px; color: var(--text); padding: 0.46rem 0.55rem; font-size: 0.8rem; }
+.settings input:focus, .settings select:focus, textarea:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(56, 213, 255, 0.12); }
+textarea { height: 64px; resize: vertical; }
+.telemetry { padding: 0.75rem 0.15rem 0; }
+.telemetry-row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 0.42rem; align-items: center; margin-bottom: 0.38rem; }
+.telemetry-icon { width: 18px; height: 18px; color: var(--muted); opacity: 0.9; }
+.telemetry-icon.mic { color: var(--amber); }
+.telemetry-icon.pulse { color: var(--cyan); }
+.telemetry-icon svg { width: 100%; height: 100%; stroke: currentColor; fill: none; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; display: block; }
+.mic-level, .meter { height: 5px; background: rgba(255,255,255,0.06); border-radius: 999px; overflow: hidden; }
+.mic-level-fill { height: 100%; background: var(--amber); width: 0%; transition: width 0.1s; }
+.meter-fill { height: 100%; background: linear-gradient(90deg, var(--cyan), var(--green)); width: 0%; transition: width 0.1s; }
+.stat { display: inline-block; margin-right: 0.45rem; font-size: 0.66rem; color: var(--muted); }
+.stat span { color: var(--cyan); font-weight: 600; }
+.tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.35rem; padding: 0.7rem 0 0; }
+.tab-button { background: rgba(255,255,255,0.025); border-color: rgba(120, 207, 255, 0.14); border-radius: 10px; padding: 0.52rem 0.35rem; color: var(--muted); font-size: 0.78rem; text-transform: uppercase; }
+.tab-button.active { background: rgba(56, 213, 255, 0.12); border-color: rgba(56, 213, 255, 0.42); color: var(--cyan); }
+.send-row { display: grid; grid-template-columns: 1fr auto; gap: 0.45rem; align-items: end; margin-top: 0.25rem; }
+#btn-send { background: rgba(56, 213, 255, 0.14); color: var(--cyan); border-color: rgba(56, 213, 255, 0.38); border-radius: 9px; padding: 0.48rem 0.7rem; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: rgba(255,255,255,0.035); border-radius: 999px; }
+::-webkit-scrollbar-thumb { background: rgba(120, 207, 255, 0.34); border-radius: 999px; }
+@media (max-width: 900px) {
+  body { padding: 1rem; }
+  h1 { margin-bottom: 1rem; }
+  .app-shell { grid-template-columns: 1fr; gap: 1rem; height: auto; max-height: none; min-height: 0; }
+  .camera-panel, .side-panel { border-radius: 16px; min-height: auto; }
+  .camera-panel { padding: 0.8rem; }
+  .camera-stage { padding: 1rem; }
+  .status-row { font-size: 1rem; gap: 1rem; }
+  .controls { grid-template-columns: repeat(3, minmax(58px, auto)); gap: 0.45rem; }
+  .side-panel { height: min(520px, 75vh); }
+}
+</style>
+</head>
+<body>
+<h1>MiniCPM-o 4.5 Omni Live</h1>
+<main class="app-shell">
+  <section class="camera-panel" aria-label="Camera preview">
+    <div class="camera-stage">
+      <div class="status-row">
+        <span class="status-item"><span class="indicator off" id="ind-cam"></span>Camera</span>
+        <span class="status-item"><span class="indicator off" id="ind-mic"></span>Mic</span>
+        <span class="status-item"><span class="indicator off" id="ind-ws"></span>WS</span>
+      </div>
+      <div class="preview-wrap">
+        <video id="video-preview" autoplay muted playsinline></video>
+        <div class="preview-placeholder" id="preview-placeholder">Camera preview</div>
+      </div>
+      <div class="controls">
+        <button id="btn-switch-mic" class="icon-button" type="button" title="Switch microphone" aria-label="Switch microphone">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path><path d="M8 22h8"></path></svg>
+        </button>
+        <button id="btn-switch-camera" class="icon-button" type="button" title="Switch camera" aria-label="Switch camera">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h3l2-2h6l2 2h3v12H4Z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>
+        </button>
+        <button id="btn-session" type="button" title="Start session" aria-label="Start session">
+          <svg id="session-icon" viewBox="0 0 64 64" aria-hidden="true"><path d="M22 14v36l30-18Z"></path></svg>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side-panel" aria-label="Conversation panel">
+    <h2 class="side-title" id="side-title">Chat</h2>
+    <div class="panel-body">
+      <section class="panel-page active" id="panel-chat" aria-label="Chat history">
+        <div class="transcript" id="transcript"></div>
+        <div class="telemetry">
+          <div class="telemetry-row">
+            <span class="telemetry-icon mic" title="Microphone input level" aria-label="Microphone input level">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path><path d="M8 22h8"></path></svg>
+            </span>
+            <div class="mic-level"><div class="mic-level-fill" id="mic-level-fill"></div></div>
+          </div>
+          <div class="telemetry-row">
+            <span class="telemetry-icon pulse" title="Playback latency buffer" aria-label="Playback latency buffer">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2.2-6 4.4 12 2.2-6H21"></path></svg>
+            </span>
+            <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
+          </div>
+          <span class="stat">Audio buf: <span id="stat-buffer">0ms</span></span>
+          <span class="stat">Chunks: <span id="stat-chunks">0</span></span>
+          <span class="stat">Latency: <span id="stat-latency">-</span></span>
+        </div>
+      </section>
+      <section class="panel-page" id="panel-log" aria-label="Log">
+        <div class="status" id="status"></div>
+      </section>
+      <section class="panel-page" id="panel-setting" aria-label="Settings">
+        <div class="settings">
+          <div><label>Prompt</label><textarea id="text-input" placeholder="Optional text prompt">描述一下我的穿搭</textarea></div>
+          <div class="send-row"><div><label>Manual query</label><input value="Send current prompt and frame" disabled></div><button id="btn-send" type="button">Send</button></div>
+          <div><label>WS URL</label><input id="cfg-url" type="text" value=""></div>
+          <div><label>Jitter buffer (ms)</label><input id="cfg-buffer" type="number" value="300" min="50" max="2000" step="50"></div>
+          <div><label>Frame interval (ms)</label><input id="cfg-frame-interval" type="number" value="1000" min="500" max="10000" step="500"></div>
+          <div><label>Frame quality (0-1)</label><input id="cfg-quality" type="number" value="0.5" min="0.1" max="1.0" step="0.1"></div>
+          <div><label>Frame max-width</label><input id="cfg-max-width" type="number" value="512" min="128" max="1920" step="64"></div>
+          <div><label>Send audio</label><select id="cfg-send-audio"><option value="yes">Yes</option><option value="no">No</option></select></div>
+          <div><label>Backend speech ASR</label><select id="cfg-backend-asr"><option value="no">No</option><option value="yes">Yes</option></select></div>
+          <div><label>Browser speech ASR</label><select id="cfg-browser-asr"><option value="yes">Yes</option><option value="no">No</option></select></div>
+          <div><label>Continuous keyframes</label><select id="cfg-auto-vision"><option value="yes">Yes</option><option value="no">No</option></select></div>
+          <div><label>Vision interval (s)</label><input id="cfg-vision-interval" type="number" value="3" min="1" max="60" step="1"></div>
+          <div><label>Microphone</label><select id="cfg-mic-device"><option value="">Default</option></select></div>
+          <div><label>Camera</label><select id="cfg-camera-device"><option value="">Default</option></select></div>
+          <div><button id="btn-refresh-devices" type="button">Refresh devices</button></div>
+        </div>
+      </section>
+    </div>
+    <nav class="tabs" aria-label="Panel tabs">
+      <button class="tab-button active" type="button" data-panel="chat">Chat</button>
+      <button class="tab-button" type="button" data-panel="log">Log</button>
+      <button class="tab-button" type="button" data-panel="setting">Setting</button>
+    </nav>
+  </aside>
+</main>
+
+<canvas id="frame-canvas" style="display:none;"></canvas>
+
+<script>
+const SAMPLE_RATE = 24000;
+const MIC_RATE = 16000;
+
+let audioCtx = null;
+let scriptNode = null;
+let pcmQueue = new Float32Array(0);
+let ws = null;
+let mediaStream = null;
+let micStream = null;
+let micProcessor = null;
+let micContext = null;
+let micSink = null;
+let micRecorder = null;
+let speechRecognition = null;
+let restartingSpeechRecognition = false;
+let assistantBusy = false;
+let asrPausedForAssistant = false;
+let resumeAsrTimer = null;
+let lastAsrFinalText = '';
+let lastAsrFinalTime = 0;
+let frameTimer = null;
+let sessionActive = false;
+let chunkCount = 0;
+let requestTime = 0;
+let firstChunkTime = 0;
+let jitterBuffering = false;
+let lastMicLogTime = 0;
+let silentMicLogCount = 0;
+let audioInputDevices = [];
+let videoInputDevices = [];
+let currentMicDeviceId = '';
+let currentCameraDeviceId = '';
+let autoSwitchingMic = false;
+let silentMicDeviceIds = new Set();
+let micFailoverExhausted = false;
+let interactionMode = 'normal';
+let bargeInSpeechStart = 0;
+let lastInterruptTime = 0;
+let suppressAssistantAudio = false;
+let bargeInAcceptUntil = 0;
+let lastBargeInVoiceTime = 0;
+let recentAssistantText = '';
+let assistantAsrLogActive = false;
+const BARGE_IN_RMS_THRESHOLD = 0.035;
+const BARGE_IN_MIN_MS = 450;
+const BARGE_IN_COOLDOWN_MS = 2500;
+const BARGE_IN_ACCEPT_WINDOW_MS = 6500;
+const BARGE_IN_FINAL_GRACE_MS = 1800;
+const MIN_ASSISTANT_PLAYBACK_QUERY_CHARS = 4;
+const KEEP_ASR_DURING_ASSISTANT = false;
+const MUTE_MIC_DURING_ASSISTANT = true;
+
+const videoEl = document.getElementById('video-preview');
+const previewPlaceholder = document.getElementById('preview-placeholder');
+const canvas = document.getElementById('frame-canvas');
+const ctx = canvas.getContext('2d');
+const btnSession = document.getElementById('btn-session');
+const sessionIcon = document.getElementById('session-icon');
+const btnSwitchMic = document.getElementById('btn-switch-mic');
+const btnSwitchCamera = document.getElementById('btn-switch-camera');
+const btnSend = document.getElementById('btn-send');
+const btnRefreshDevices = document.getElementById('btn-refresh-devices');
+const textInput = document.getElementById('text-input');
+const statusEl = document.getElementById('status');
+const transcriptEl = document.getElementById('transcript');
+const meterFill = document.getElementById('meter-fill');
+const statBuffer = document.getElementById('stat-buffer');
+const statChunks = document.getElementById('stat-chunks');
+const statLatency = document.getElementById('stat-latency');
+const indCam = document.getElementById('ind-cam');
+const indMic = document.getElementById('ind-mic');
+const indWs = document.getElementById('ind-ws');
+const sideTitle = document.getElementById('side-title');
+const panelPages = document.querySelectorAll('.panel-page');
+const tabButtons = document.querySelectorAll('.tab-button');
+
+// WS URL auto-detect (port+1 from page)
+const wsPort = parseInt(location.port || '7860') + 1;
+const wsDefaultUrl = `ws://${location.hostname}:${wsPort}`;
+document.getElementById('cfg-url').placeholder = wsDefaultUrl;
+
+function getWsUrl() { return document.getElementById('cfg-url').value.trim() || wsDefaultUrl; }
+function getFrameInterval() { return parseInt(document.getElementById('cfg-frame-interval').value) || 1000; }
+function getQuality() { return parseFloat(document.getElementById('cfg-quality').value) || 0.5; }
+function getMaxWidth() { return parseInt(document.getElementById('cfg-max-width').value) || 512; }
+function getJitterMs() { return parseInt(document.getElementById('cfg-buffer').value) || 300; }
+function getSendAudio() { return document.getElementById('cfg-send-audio').value === 'yes'; }
+function getBackendAsr() { return document.getElementById('cfg-backend-asr').value === 'yes'; }
+function getUseBrowserAsr() { return document.getElementById('cfg-browser-asr').value === 'yes'; }
+function getAutoVision() { return document.getElementById('cfg-auto-vision').value === 'yes'; }
+function getVisionInterval() { return parseInt(document.getElementById('cfg-vision-interval').value) || 3; }
+function getInteractionMode() { return interactionMode; }
+
+function sendSessionConfig() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const isDuplex = true;
+  const isContinuous = getInteractionMode() === 'continuous';
+  ws.send(JSON.stringify({
+    type: 'config',
+    mode: isDuplex ? 'duplex' : 'omni',
+    interaction_mode: getInteractionMode(),
+    backend_asr: getBackendAsr(),
+    auto_vision: isContinuous && getAutoVision(),
+    vision_interval: getVisionInterval(),
+  }));
+}
+
+function setActivePanel(panelName) {
+  const normalized = panelName === 'setting' || panelName === 'log' ? panelName : 'chat';
+  panelPages.forEach(page => page.classList.toggle('active', page.id === `panel-${normalized}`));
+  tabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.panel === normalized));
+  sideTitle.textContent = normalized === 'setting' ? 'Setting' : normalized === 'log' ? 'Log' : 'Chat';
+}
+
+function updateSessionButton() {
+  if (sessionActive) {
+    btnSession.classList.add('stop');
+    btnSession.title = 'Stop session';
+    btnSession.setAttribute('aria-label', 'Stop session');
+    sessionIcon.innerHTML = '<rect x="18" y="18" width="28" height="28" rx="3"></rect>';
+  } else {
+    btnSession.classList.remove('stop');
+    btnSession.title = 'Start session';
+    btnSession.setAttribute('aria-label', 'Start session');
+    sessionIcon.innerHTML = '<path d="M22 14v36l30-18Z"></path>';
+  }
+}
+
+function log(msg) {
+  const ts = new Date().toLocaleTimeString('en-US', {hour12:false, fractionalSecondDigits:1});
+  statusEl.textContent += `[${ts}] ${msg}\n`;
+  statusEl.scrollTop = statusEl.scrollHeight;
+}
+
+// --- Audio playback (ScriptProcessor, works over HTTP) ---
+function initAudioPlayback() {
+  if (audioCtx) return;
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  scriptNode = audioCtx.createScriptProcessor(4096, 0, 1);
+  scriptNode.onaudioprocess = (e) => {
+    const output = e.outputBuffer.getChannelData(0);
+    if (pcmQueue.length >= output.length) {
+      output.set(pcmQueue.subarray(0, output.length));
+      pcmQueue = pcmQueue.slice(output.length);
+    } else {
+      output.fill(0);
+    }
+    const bufMs = (pcmQueue.length / SAMPLE_RATE * 1000).toFixed(0);
+    statBuffer.textContent = bufMs + 'ms';
+    meterFill.style.width = Math.min(100, pcmQueue.length / SAMPLE_RATE * 100 / 2) + '%';
+  };
+  scriptNode.connect(audioCtx.destination);
+}
+
+function feedAudio(samples) {
+  const old = pcmQueue;
+  pcmQueue = new Float32Array(old.length + samples.length);
+  pcmQueue.set(old);
+  pcmQueue.set(samples, old.length);
+}
+
+function clearAudio() { pcmQueue = new Float32Array(0); }
+
+function hasPendingAssistantAudio() {
+  return pcmQueue.length > SAMPLE_RATE * 0.25;
+}
+
+function resumeBrowserAsrNow(reason) {
+  if (!speechRecognition || !sessionActive) return;
+  if (resumeAsrTimer) { clearTimeout(resumeAsrTimer); resumeAsrTimer = null; }
+  if (reason !== 'interrupt') assistantBusy = false;
+  asrPausedForAssistant = false;
+  try { speechRecognition.start(); log('Browser ASR resumed' + (reason ? ` (${reason})` : '')); } catch (_) {}
+}
+
+function sendInterrupt(reason) {
+  const now = performance.now();
+  if (!ws || ws.readyState !== WebSocket.OPEN || now - lastInterruptTime < BARGE_IN_COOLDOWN_MS) return;
+  lastInterruptTime = now;
+  bargeInAcceptUntil = now + BARGE_IN_ACCEPT_WINDOW_MS;
+  bargeInSpeechStart = 0;
+  clearAudio();
+  suppressAssistantAudio = true;
+  chunkCount = 0;
+  statChunks.textContent = '0';
+  statBuffer.textContent = '0ms';
+  ws.send(JSON.stringify({ type: 'interrupt', reason: reason || 'barge_in' }));
+  log('Voice interrupt sent' + (reason ? ` (${reason})` : ''));
+  if (!KEEP_ASR_DURING_ASSISTANT) resumeBrowserAsrNow('interrupt');
+}
+
+function detectBargeIn(rms) {
+  if (!sessionActive || !(assistantBusy || hasPendingAssistantAudio())) {
+    bargeInSpeechStart = 0;
+    return;
+  }
+  const now = performance.now();
+  if (now - lastInterruptTime < BARGE_IN_COOLDOWN_MS) return;
+  if (rms >= BARGE_IN_RMS_THRESHOLD) {
+    lastBargeInVoiceTime = now;
+    if (!bargeInSpeechStart) bargeInSpeechStart = now;
+    if (now - bargeInSpeechStart >= BARGE_IN_MIN_MS) {
+      sendInterrupt(`mic rms=${rms.toFixed(3)}`);
+    }
+  } else {
+    bargeInSpeechStart = 0;
+  }
+}
+
+function normalizeAsrText(text) {
+  return (text || '').replace(/[\s，。！？,.!?、；;：“”"'（）()【】\[\]]/g, '');
+}
+
+function rememberAssistantText(text) {
+  if (!text) return;
+  recentAssistantText = (recentAssistantText + text).slice(-500);
+}
+
+function isLikelyAssistantEcho(normalizedText) {
+  const assistantNorm = normalizeAsrText(recentAssistantText);
+  if (!normalizedText || !assistantNorm) return false;
+  if (assistantNorm.includes(normalizedText)) return true;
+  if (normalizedText.length <= MIN_ASSISTANT_PLAYBACK_QUERY_CHARS) return true;
+  return false;
+}
+
+// --- Camera ---
+let cameraAvailable = false;
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    log('Camera API unavailable (requires HTTPS or localhost).');
+    log('Tip: launch Chrome with --unsafely-treat-insecure-origin-as-secure="' + location.origin + '"');
+    return false;
+  }
+  try {
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+    }
+    const selectedDevice = document.getElementById('cfg-camera-device').value;
+    const videoConstraints = selectedDevice
+      ? { deviceId: { exact: selectedDevice }, width: { ideal: 640 }, height: { ideal: 480 } }
+      : { width: { ideal: 640 }, height: { ideal: 480 } };
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      video: videoConstraints,
+      audio: false,
+    });
+    videoEl.srcObject = mediaStream;
+    const track = mediaStream.getVideoTracks()[0];
+    if (track) {
+      const settings = track.getSettings ? track.getSettings() : {};
+      currentCameraDeviceId = settings.deviceId || selectedDevice || '';
+      log(`Camera device: ${track.label || 'default'}`);
+    }
+    indCam.className = 'indicator on';
+    if (previewPlaceholder) previewPlaceholder.style.display = 'none';
+    cameraAvailable = true;
+    await enumerateAudioDevices(false);
+    log('Camera started');
+    return true;
+  } catch (e) {
+    log('Camera error: ' + e.message);
+    return false;
+  }
+}
+
+function captureFrame() {
+  if (!mediaStream || !videoEl.videoWidth) return null;
+  const maxW = getMaxWidth();
+  const scale = Math.min(1, maxW / videoEl.videoWidth);
+  canvas.width = Math.round(videoEl.videoWidth * scale);
+  canvas.height = Math.round(videoEl.videoHeight * scale);
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', getQuality());
+}
+
+// --- Audio Device Enumeration ---
+async function enumerateAudioDevices(requestPermission = true) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try {
+    // Need a temp getUserMedia call to get device labels before a session starts.
+    if (requestPermission && !micStream && !mediaStream) {
+      const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      tempStream.getTracks().forEach(t => t.stop());
+    }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    audioInputDevices = devices.filter(d => d.kind === 'audioinput');
+    videoInputDevices = devices.filter(d => d.kind === 'videoinput');
+
+    const select = document.getElementById('cfg-mic-device');
+    const selected = select.value || currentMicDeviceId;
+    select.innerHTML = '<option value="">Default</option>';
+    audioInputDevices.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Microphone ${i + 1}`;
+      select.appendChild(opt);
+    });
+    if (selected && [...select.options].some(o => o.value === selected)) {
+      select.value = selected;
+    } else {
+      const preferred = audioInputDevices.find(d => /external microphone/i.test(d.label || '') && !/default|communications/i.test(d.label || ''))
+        || audioInputDevices.find(d => /external/i.test(d.label || ''));
+      if (preferred) {
+        select.value = preferred.deviceId;
+        log(`Auto-selected preferred microphone: ${preferred.label || 'External Microphone'}`);
+      }
+    }
+
+    const cameraSelect = document.getElementById('cfg-camera-device');
+    const selectedCamera = cameraSelect.value || currentCameraDeviceId;
+    cameraSelect.innerHTML = '<option value="">Default</option>';
+    videoInputDevices.forEach((d, i) => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Camera ${i + 1}`;
+      cameraSelect.appendChild(opt);
+    });
+    if (selectedCamera && [...cameraSelect.options].some(o => o.value === selectedCamera)) {
+      cameraSelect.value = selectedCamera;
+    }
+
+    log(`Detected ${audioInputDevices.length} microphone device(s): ${audioInputDevices.map((d, i) => d.label || `Microphone ${i + 1}`).join(' | ') || 'none'}`);
+    log(`Detected ${videoInputDevices.length} camera device(s): ${videoInputDevices.map((d, i) => d.label || `Camera ${i + 1}`).join(' | ') || 'none'}`);
+  } catch (e) { console.warn('Cannot enumerate audio devices:', e); }
+}
+enumerateAudioDevices();
+btnRefreshDevices.addEventListener('click', enumerateAudioDevices);
+
+function selectNextOption(selectId) {
+  const select = document.getElementById(selectId);
+  if (!select || select.options.length <= 1) return null;
+  const nextIndex = (select.selectedIndex + 1) % select.options.length;
+  select.selectedIndex = nextIndex;
+  return select.options[nextIndex];
+}
+
+async function switchMicDevice() {
+  await enumerateAudioDevices(false);
+  const option = selectNextOption('cfg-mic-device');
+  if (!option) {
+    log('No alternate microphone device available');
+    return;
+  }
+  log(`Switched microphone selection: ${option.textContent}`);
+  silentMicLogCount = 0;
+  micFailoverExhausted = false;
+  silentMicDeviceIds = new Set();
+  if (sessionActive) {
+    stopMic();
+    await startMic();
+  }
+}
+
+async function switchCameraDevice() {
+  await enumerateAudioDevices(false);
+  const option = selectNextOption('cfg-camera-device');
+  if (!option) {
+    log('No alternate camera device available');
+    return;
+  }
+  log(`Switched camera selection: ${option.textContent}`);
+  if (sessionActive || mediaStream) {
+    await startCamera();
+    sendFrame();
+  }
+}
+
+// --- Microphone ---
+let micAvailable = false;
+
+function resampleTo16k(input, sourceRate) {
+  if (!input || input.length === 0) return new Float32Array(0);
+  if (sourceRate === MIC_RATE) return new Float32Array(input);
+  const ratio = sourceRate / MIC_RATE;
+  const outLen = Math.floor(input.length / ratio);
+  const resampled = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const srcIdx = i * ratio;
+    const idx0 = Math.floor(srcIdx);
+    const idx1 = Math.min(idx0 + 1, input.length - 1);
+    const frac = srcIdx - idx0;
+    resampled[i] = input[idx0] * (1 - frac) + input[idx1] * frac;
+  }
+  return resampled;
+}
+
+function sendMicPcm(input, sourceRate, label) {
+  if (!sessionActive || !ws || ws.readyState !== WebSocket.OPEN) return;
+  let sum = 0;
+  let peak = 0;
+  for (let i = 0; i < input.length; i++) {
+    sum += input[i] * input[i];
+    peak = Math.max(peak, Math.abs(input[i]));
+  }
+  const rms = input.length ? Math.sqrt(sum / input.length) : 0;
+  const levelEl = document.getElementById('mic-level-fill');
+  if (levelEl) levelEl.style.width = Math.min(100, rms * 500) + '%';
+  if (MUTE_MIC_DURING_ASSISTANT && (assistantBusy || hasPendingAssistantAudio())) {
+    return;
+  }
+  detectBargeIn(rms);
+
+  const resampled = resampleTo16k(input, sourceRate);
+  const header = new Uint8Array([0x4D, 0x49, 0x43, 0x00]); // "MIC\0"
+  const msg = new Uint8Array(header.length + resampled.byteLength);
+  msg.set(header);
+  msg.set(new Uint8Array(resampled.buffer), header.length);
+  ws.send(msg.buffer);
+
+  const now = performance.now();
+  if (now - lastMicLogTime > 1000) {
+    lastMicLogTime = now;
+    log(`Mic ${label} rms=${rms.toFixed(5)}, peak=${peak.toFixed(5)}, sent=${resampled.length} samples`);
+    if (rms < 0.0001 && peak < 0.0001) {
+      silentMicLogCount += 1;
+      if (silentMicLogCount === 3 || silentMicLogCount % 5 === 0) {
+        log('WARNING: browser microphone stream is silent. Select another Microphone device or check OS input volume/mute.');
+      }
+    } else {
+      silentMicLogCount = 0;
+    }
+  }
+}
+
+async function autoSwitchSilentMic() {
+  if (autoSwitchingMic || micFailoverExhausted || audioInputDevices.length <= 1 || !sessionActive) return;
+  autoSwitchingMic = true;
+  try {
+    await enumerateAudioDevices();
+    const select = document.getElementById('cfg-mic-device');
+    if (currentMicDeviceId) silentMicDeviceIds.add(currentMicDeviceId);
+    const nextDevice = audioInputDevices.find(d => !silentMicDeviceIds.has(d.deviceId));
+    if (!nextDevice) {
+      micFailoverExhausted = true;
+      log('ERROR: all browser microphone devices are silent. Check OS input volume/mute, Chrome site microphone permission, or physical microphone connection.');
+      return;
+    }
+    if (!nextDevice) return;
+    log(`Auto switching microphone because current stream is silent: ${nextDevice.label || 'next device'}`);
+    stopMic();
+    select.value = nextDevice.deviceId;
+    silentMicLogCount = 0;
+    await startMic();
+  } finally {
+    autoSwitchingMic = false;
+  }
+}
+
+async function startMediaRecorderCapture() {
+  if (!window.MediaRecorder) return false;
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+  ];
+  const mimeType = candidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  try {
+    micRecorder = new MediaRecorder(micStream, mimeType ? { mimeType } : undefined);
+    micRecorder.ondataavailable = async (event) => {
+      if (!event.data || event.data.size === 0 || !micContext) return;
+      try {
+        const arrayBuffer = await event.data.arrayBuffer();
+        const decoded = await micContext.decodeAudioData(arrayBuffer.slice(0));
+        sendMicPcm(decoded.getChannelData(0), decoded.sampleRate, 'recorder');
+      } catch (e) {
+        console.warn('MediaRecorder decode failed:', e);
+      }
+    };
+    micRecorder.start(500);
+    log(`Microphone recorder started (${mimeType || 'default'}, 16kHz PCM output)`);
+    return true;
+  } catch (e) {
+    log('MediaRecorder mic path failed: ' + e.message);
+    micRecorder = null;
+    return false;
+  }
+}
+
+async function startMic() {
+  if (!getSendAudio()) return false;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    log('Mic API unavailable (requires HTTPS or localhost).');
+    return false;
+  }
+  try {
+    const selectedDevice = document.getElementById('cfg-mic-device').value;
+    currentMicDeviceId = selectedDevice;
+    const audioConstraints = selectedDevice ? {} : true;
+    if (selectedDevice) audioConstraints.deviceId = { exact: selectedDevice };
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    const track = micStream.getAudioTracks()[0];
+    if (track) {
+      const settings = track.getSettings ? track.getSettings() : {};
+      currentMicDeviceId = settings.deviceId || selectedDevice || '';
+      log(`Mic device: ${track.label || 'default'} (${settings.sampleRate || 'native'}Hz)`);
+    }
+    // Use device native sample rate, then downsample to 16kHz
+    micContext = new AudioContext();
+    await micContext.resume();
+    const nativeSR = micContext.sampleRate;
+    log(`Mic native sample rate: ${nativeSR}Hz, will downsample to ${MIC_RATE}Hz`);
+
+    log('Using WebAudio ScriptProcessor mic path for continuous PCM stream');
+    const source = micContext.createMediaStreamSource(micStream);
+    micProcessor = micContext.createScriptProcessor(4096, 1, 1);
+    micProcessor.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0);
+      sendMicPcm(input, nativeSR, 'webaudio');
+    };
+    source.connect(micProcessor);
+    micSink = micContext.createGain();
+    micSink.gain.value = 0;
+    micProcessor.connect(micSink);
+    micSink.connect(micContext.destination); // needed for ScriptProcessor to run
+    indMic.className = 'indicator on';
+    log('Microphone started (WebAudio 16kHz PCM path)');
+    return true;
+  } catch (e) {
+    log('Mic error: ' + e.message);
+    return false;
+  }
+}
+
+function stopMic() {
+  if (micRecorder && micRecorder.state !== 'inactive') { micRecorder.stop(); }
+  micRecorder = null;
+  if (micProcessor) { micProcessor.disconnect(); micProcessor = null; }
+  if (micSink) { micSink.disconnect(); micSink = null; }
+  if (micContext) { micContext.close(); micContext = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  indMic.className = 'indicator off';
+}
+
+function pauseBrowserAsrForAssistant(reason) {
+  assistantBusy = true;
+  if (resumeAsrTimer) { clearTimeout(resumeAsrTimer); resumeAsrTimer = null; }
+  if (KEEP_ASR_DURING_ASSISTANT) {
+    if (!assistantAsrLogActive) {
+      log('Browser ASR kept active for barge-in' + (reason ? ` (${reason})` : ''));
+      assistantAsrLogActive = true;
+    }
+    asrPausedForAssistant = false;
+    return;
+  }
+  if (!speechRecognition || asrPausedForAssistant) return;
+  asrPausedForAssistant = true;
+  try { speechRecognition.stop(); } catch (_) {}
+  log('Browser ASR paused during assistant response' + (reason ? ` (${reason})` : ''));
+}
+
+function scheduleBrowserAsrResume() {
+  if (KEEP_ASR_DURING_ASSISTANT) {
+    assistantBusy = false;
+    asrPausedForAssistant = false;
+    assistantAsrLogActive = false;
+    return;
+  }
+  if (!speechRecognition || !asrPausedForAssistant || !sessionActive) return;
+  if (resumeAsrTimer) clearTimeout(resumeAsrTimer);
+  resumeAsrTimer = setTimeout(() => {
+    if (!sessionActive || !speechRecognition) return;
+    if (hasPendingAssistantAudio()) {
+      scheduleBrowserAsrResume();
+      return;
+    }
+    assistantBusy = false;
+    asrPausedForAssistant = false;
+    try { speechRecognition.start(); log('Browser ASR resumed'); } catch (_) {}
+  }, 800);
+}
+
+function startBrowserAsrFallback() {
+  if (!getUseBrowserAsr()) return;
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    log('Browser ASR unavailable in this browser.');
+    return;
+  }
+  if (speechRecognition) return;
+
+  speechRecognition = new SpeechRecognition();
+  speechRecognition.lang = 'zh-CN';
+  speechRecognition.continuous = true;
+  speechRecognition.interimResults = true;
+
+  speechRecognition.onstart = () => log('Browser ASR started');
+  speechRecognition.onerror = (event) => {
+    log('Browser ASR error: ' + event.error);
+    if (event.error === 'no-speech') {
+      log('Browser ASR also hears silence. Check the selected microphone input level.');
+    }
+  };
+  speechRecognition.onend = () => {
+    if (asrPausedForAssistant) return;
+    if (sessionActive && speechRecognition && !restartingSpeechRecognition) {
+      restartingSpeechRecognition = true;
+      setTimeout(() => {
+        restartingSpeechRecognition = false;
+        try { if (sessionActive && speechRecognition) speechRecognition.start(); } catch (_) {}
+      }, 300);
+    }
+  };
+  speechRecognition.onresult = (event) => {
+    if (asrPausedForAssistant) return;
+    let finalText = '';
+    let interimText = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const text = event.results[i][0].transcript.trim();
+      if (event.results[i].isFinal) finalText += text;
+      else interimText += text;
+    }
+    if (interimText) log('Browser ASR interim: ' + interimText);
+    if (finalText && ws && ws.readyState === WebSocket.OPEN) {
+      const normalized = normalizeAsrText(finalText);
+      const now = performance.now();
+      if (normalized.length < 2) {
+        log('Browser ASR final ignored as noise: ' + finalText);
+        return;
+      }
+      if (normalized === lastAsrFinalText && now - lastAsrFinalTime < 4000) {
+        log('Browser ASR final ignored as duplicate: ' + finalText);
+        return;
+      }
+      lastAsrFinalText = normalized;
+      lastAsrFinalTime = now;
+      if (assistantBusy || hasPendingAssistantAudio()) {
+        const hasRecentUserVoice = now - lastBargeInVoiceTime <= BARGE_IN_FINAL_GRACE_MS;
+        if (!hasRecentUserVoice || now > bargeInAcceptUntil || isLikelyAssistantEcho(normalized)) {
+          log('Browser ASR final ignored during assistant playback: ' + finalText);
+          return;
+        }
+        log('Browser ASR final during assistant playback: ' + finalText);
+        sendInterrupt('browser asr final');
+      } else {
+        log('Browser ASR final: ' + finalText);
+      }
+      assistantBusy = true;
+      const frame = getImageForQuery();
+      ws.send(JSON.stringify({ type: 'query', text: finalText, image: frame }));
+    }
+  };
+
+  try { speechRecognition.start(); }
+  catch (e) { log('Browser ASR start failed: ' + e.message); }
+}
+
+function stopBrowserAsrFallback() {
+  if (resumeAsrTimer) { clearTimeout(resumeAsrTimer); resumeAsrTimer = null; }
+  assistantBusy = false;
+  asrPausedForAssistant = false;
+  if (!speechRecognition) return;
+  const recognition = speechRecognition;
+  speechRecognition = null;
+  try { recognition.stop(); } catch (_) {}
+}
+
+// --- WebSocket ---
+function connectWs() {
+  return new Promise((resolve, reject) => {
+    const url = getWsUrl();
+    log('Connecting to ' + url);
+    ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      indWs.className = 'indicator on';
+      log('WebSocket connected');
+      resolve();
+    };
+    ws.onerror = () => {
+      log('WebSocket error');
+      reject(new Error('WS connect failed'));
+    };
+    ws.onclose = () => {
+      indWs.className = 'indicator off';
+      if (sessionActive) { log('WebSocket closed'); stopSession(false); }
+    };
+    ws.onmessage = handleWsMessage;
+  });
+}
+
+let currentAssistantBubble = null;
+let currentUserBubble = null;
+
+function addBubble(role, text) {
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble ' + role;
+  const roleLabel = document.createElement('div');
+  roleLabel.className = 'role';
+  roleLabel.textContent = role === 'user' ? '🎤 You' : '🤖 Assistant';
+  bubble.appendChild(roleLabel);
+  const content = document.createElement('div');
+  content.className = 'content';
+  content.textContent = text;
+  bubble.appendChild(content);
+  transcriptEl.appendChild(bubble);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  return bubble;
+}
+
+function appendToBubble(bubble, text) {
+  if (!bubble) return;
+  const content = bubble.querySelector('.content');
+  if (content) {
+    content.textContent += text;
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  }
+}
+
+function formatMetric(value, suffix, digits = 0) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return '-';
+  return Number(value).toFixed(digits) + suffix;
+}
+
+function addMetricsToBubble(bubble, metrics) {
+  if (!bubble || !metrics) return;
+  let perf = bubble.querySelector('.perf');
+  if (!perf) {
+    perf = document.createElement('div');
+    perf.className = 'perf';
+    bubble.appendChild(perf);
+  }
+  const ttft = formatMetric(metrics.ttft_ms, 'ms');
+  const tps = formatMetric(metrics.tps, ' tok/s', 2);
+  const rtf = metrics.tts_rtf === null || metrics.tts_rtf === undefined ? '-' : Number(metrics.tts_rtf).toFixed(3);
+  perf.textContent = `TTFT ${ttft} · TPS ${tps} · TTS RTF ${rtf}`;
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function handleWsMessage(event) {
+  if (typeof event.data === 'string') {
+    const msg = JSON.parse(event.data);
+    if (msg.state) {
+      if (typeof msg.state.auto_vision === 'boolean') {
+        document.getElementById('cfg-auto-vision').value = msg.state.auto_vision ? 'yes' : 'no';
+      }
+      if (msg.state.vision_prompt) {
+        textInput.value = msg.state.vision_prompt;
+      }
+    }
+    // Duplex: user speech recognized
+    if (msg.role === 'user' && msg.text) {
+      currentUserBubble = addBubble('user', msg.text);
+      currentAssistantBubble = null;
+    }
+    // Duplex/simplex: assistant speaking
+    if (msg.role === 'assistant' && msg.text) {
+      pauseBrowserAsrForAssistant('assistant text');
+      rememberAssistantText(msg.text);
+      if (!currentAssistantBubble) {
+        currentAssistantBubble = addBubble('assistant', msg.text);
+      } else {
+        appendToBubble(currentAssistantBubble, msg.text);
+      }
+    }
+    // Legacy: transcript (for backward compat with simplex)
+    if (msg.transcript && !msg.role) {
+      pauseBrowserAsrForAssistant('assistant transcript');
+      rememberAssistantText(msg.transcript);
+      if (!currentAssistantBubble) {
+        currentAssistantBubble = addBubble('assistant', msg.transcript);
+      } else {
+        const content = currentAssistantBubble.querySelector('.content');
+        if (content) content.textContent = msg.transcript;
+      }
+    }
+    if (msg.text_chunk) {
+      pauseBrowserAsrForAssistant('assistant text chunk');
+      rememberAssistantText(msg.text_chunk);
+      if (!currentAssistantBubble) {
+        currentAssistantBubble = addBubble('assistant', msg.text_chunk);
+      } else {
+        appendToBubble(currentAssistantBubble, msg.text_chunk);
+      }
+    }
+    if (msg.done) {
+      if (msg.metrics && currentAssistantBubble) {
+        addMetricsToBubble(currentAssistantBubble, msg.metrics);
+      }
+      log('Generation complete');
+      suppressAssistantAudio = false;
+      assistantAsrLogActive = false;
+      currentAssistantBubble = null;
+      scheduleBrowserAsrResume();
+    }
+    if (msg.error) log('ERROR: ' + msg.error);
+    if (msg.info) {
+      log(msg.info);
+      if (msg.info.includes('Generating assistant response')) {
+        suppressAssistantAudio = false;
+        clearAudio();
+        chunkCount = 0;
+        statChunks.textContent = '0';
+        statLatency.textContent = '—';
+        requestTime = performance.now();
+        pauseBrowserAsrForAssistant('generation');
+      }
+    }
+  } else {
+    // Binary: PCM audio response
+    if (suppressAssistantAudio) return;
+    pauseBrowserAsrForAssistant('audio playback');
+    const samples = new Float32Array(event.data);
+    chunkCount++;
+    statChunks.textContent = chunkCount;
+
+    if (chunkCount === 1) {
+      firstChunkTime = performance.now();
+      statLatency.textContent = (firstChunkTime - requestTime).toFixed(0) + 'ms';
+      log(`First audio chunk (latency: ${statLatency.textContent})`);
+    }
+
+    feedAudio(samples);
+
+    // Jitter buffering
+    if (jitterBuffering) {
+      const needed = (getJitterMs() / 1000) * SAMPLE_RATE;
+      if (pcmQueue.length >= needed) {
+        jitterBuffering = false;
+        if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        log('Jitter buffer filled, playback started');
+      }
+    }
+  }
+}
+
+function getImageForQuery() {
+  if (cameraAvailable) {
+    return captureFrame();
+  }
+  return null;
+}
+
+// --- Session management ---
+async function startSession() {
+  btnSession.disabled = true;
+  silentMicDeviceIds = new Set();
+  micFailoverExhausted = false;
+  silentMicLogCount = 0;
+
+  // Try camera (non-blocking if fails)
+  await startCamera();
+
+  initAudioPlayback();
+  clearAudio();
+  transcriptEl.innerHTML = '';
+  currentAssistantBubble = null;
+  currentUserBubble = null;
+  chunkCount = 0;
+  statChunks.textContent = '0';
+  statLatency.textContent = '—';
+
+  try {
+    await connectWs();
+  } catch (e) {
+    btnSession.disabled = false;
+    return;
+  }
+
+  sessionActive = true;
+  updateSessionButton();
+  btnSession.disabled = false;
+
+  const isDuplex = true;
+  sendSessionConfig();
+  log('Voice mode: speak into microphone, model responds automatically');
+  log('Vision mode: intent-controlled');
+  if (getBackendAsr()) log('Backend speech ASR enabled');
+  if (getUseBrowserAsr()) log('Browser speech ASR enabled');
+
+  await startMic();
+  startBrowserAsrFallback();
+
+  // Start frame capture loop only if camera available
+  if (cameraAvailable) {
+    sendFrame();
+    frameTimer = setInterval(sendFrame, getFrameInterval());
+    log(`Frame capture every ${getFrameInterval()}ms`);
+  } else {
+    log('No camera. Text/audio can still be used.');
+  }
+}
+
+function sendFrame() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > 1024 * 1024) return;
+  const frame = captureFrame();
+  if (!frame) return;
+  ws.send(JSON.stringify({ type: 'frame', image: frame }));
+}
+
+function sendText() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('Not connected'); return; }
+  const text = textInput.value.trim();
+  if (!text && !cameraAvailable) {
+    log('Enter text or enable camera first');
+    return;
+  }
+
+  // Reset audio state for new response
+  clearAudio();
+  chunkCount = 0;
+  statChunks.textContent = '0';
+  statLatency.textContent = '—';
+  jitterBuffering = true;
+  requestTime = performance.now();
+  if (audioCtx) audioCtx.suspend();
+
+  // Show user query in chat
+  currentAssistantBubble = null;
+  if (text) addBubble('user', text);
+  else addBubble('user', '[camera query]');
+
+  // Send with current camera frame when available
+  const frame = getImageForQuery();
+  const msg = { type: 'query', text: text, image: frame };
+  ws.send(JSON.stringify(msg));
+  log('Query sent: ' + (text || '[camera only]').substring(0, 50));
+}
+
+function stopSession(sendClose = true) {
+  sessionActive = false;
+  btnSession.disabled = false;
+  updateSessionButton();
+  if (frameTimer) { clearInterval(frameTimer); frameTimer = null; }
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    if (sendClose) ws.send(JSON.stringify({ type: 'stop' }));
+    ws.close();
+  }
+  ws = null;
+  stopBrowserAsrFallback();
+  stopMic();
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  videoEl.srcObject = null;
+  cameraAvailable = false;
+  if (previewPlaceholder) previewPlaceholder.style.display = 'flex';
+  indCam.className = 'indicator off';
+  indWs.className = 'indicator off';
+  log('Session stopped');
+}
+
+btnSession.addEventListener('click', () => {
+  if (sessionActive) stopSession(true);
+  else startSession();
+});
+btnSwitchMic.addEventListener('click', switchMicDevice);
+btnSwitchCamera.addEventListener('click', switchCameraDevice);
+btnSend.addEventListener('click', sendText);
+tabButtons.forEach(btn => btn.addEventListener('click', () => setActivePanel(btn.dataset.panel)));
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); sendText(); }
+});
+updateSessionButton();
+</script>
+</body>
+</html>

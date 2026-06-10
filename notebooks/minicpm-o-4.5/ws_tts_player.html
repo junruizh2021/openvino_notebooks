@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiniCPM-o 4.5 — WebSocket TTS Player</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem; }
+h1 { margin-bottom: 0.5rem; font-size: 1.5rem; color: #00d4ff; }
+.subtitle { color: #888; margin-bottom: 1.5rem; font-size: 0.9rem; }
+.container { width: 100%; max-width: 700px; }
+.card { background: #16213e; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid #0f3460; }
+textarea { width: 100%; height: 100px; background: #0f3460; border: 1px solid #1a4080; border-radius: 8px; color: #e0e0e0; padding: 0.75rem; font-size: 1rem; resize: vertical; }
+.controls { display: flex; gap: 0.75rem; margin-top: 1rem; flex-wrap: wrap; align-items: center; }
+button { padding: 0.6rem 1.2rem; border: none; border-radius: 8px; font-size: 0.95rem; cursor: pointer; transition: all 0.2s; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+#btn-speak { background: #00d4ff; color: #000; font-weight: 600; }
+#btn-speak:hover:not(:disabled) { background: #00b8e6; }
+#btn-stop { background: #ff4757; color: #fff; }
+#btn-stop:hover:not(:disabled) { background: #e0313f; }
+.settings { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1rem; margin-top: 0.75rem; }
+.settings label { font-size: 0.85rem; color: #aaa; }
+.settings input, .settings select { width: 100%; background: #0f3460; border: 1px solid #1a4080; border-radius: 6px; color: #e0e0e0; padding: 0.4rem; font-size: 0.85rem; }
+.status { margin-top: 1rem; padding: 0.75rem; background: #0a1628; border-radius: 8px; font-family: monospace; font-size: 0.8rem; min-height: 60px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+.transcript { margin-top: 0.5rem; padding: 0.75rem; background: #0a1628; border-radius: 8px; font-size: 0.95rem; min-height: 40px; max-height: 150px; overflow-y: auto; }
+.meter { height: 6px; background: #0f3460; border-radius: 3px; margin-top: 0.75rem; overflow: hidden; }
+.meter-fill { height: 100%; background: linear-gradient(90deg, #00d4ff, #00ff88); width: 0%; transition: width 0.1s; }
+.stat { display: inline-block; margin-right: 1rem; font-size: 0.8rem; color: #888; }
+.stat span { color: #00d4ff; }
+</style>
+</head>
+<body>
+<h1>MiniCPM-o 4.5 WebSocket TTS</h1>
+<p class="subtitle">Low-latency streaming speech via WebSocket + AudioWorklet</p>
+
+<div class="container">
+  <div class="card">
+    <textarea id="text-input" placeholder="输入文本...">请用自然的中文语音介绍一下 OpenVINO 是什么。</textarea>
+    <div class="controls">
+      <button id="btn-speak">▶ Speak</button>
+      <button id="btn-stop" disabled>■ Stop</button>
+      <label style="font-size:0.85rem;color:#aaa;margin-left:auto;">
+        Task:
+        <select id="task-select" style="background:#0f3460;border:1px solid #1a4080;border-radius:4px;color:#e0e0e0;padding:0.2rem;">
+          <option value="answer">Answer with speech</option>
+          <option value="read">Read text aloud</option>
+        </select>
+      </label>
+    </div>
+    <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
+    <div style="margin-top:0.5rem;">
+      <span class="stat">Buffer: <span id="stat-buffer">0ms</span></span>
+      <span class="stat">Chunks: <span id="stat-chunks">0</span></span>
+      <span class="stat">Latency: <span id="stat-latency">—</span></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:0.85rem;color:#aaa;margin-bottom:0.25rem;">Transcript</div>
+    <div class="transcript" id="transcript"></div>
+  </div>
+
+  <div class="card">
+    <div style="font-size:0.85rem;color:#aaa;margin-bottom:0.25rem;">Log</div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary style="cursor:pointer;color:#aaa;font-size:0.85rem;">Advanced Settings</summary>
+      <div class="settings" style="margin-top:0.5rem;">
+        <div><label>Jitter buffer (ms)</label><input id="cfg-buffer" type="number" value="300" min="50" max="2000" step="50"></div>
+        <div><label>WS URL</label><input id="cfg-url" type="text" value=""></div>
+      </div>
+    </details>
+  </div>
+</div>
+
+<script>
+// --- AudioWorklet Processor (served via /worklet.js endpoint) ---
+
+const SAMPLE_RATE = 24000;
+let audioCtx = null;
+let workletNode = null;
+let ws = null;
+let playing = false;
+let chunkCount = 0;
+let firstChunkTime = 0;
+let requestTime = 0;
+
+const btnSpeak = document.getElementById('btn-speak');
+const btnStop = document.getElementById('btn-stop');
+const textInput = document.getElementById('text-input');
+const taskSelect = document.getElementById('task-select');
+const statusEl = document.getElementById('status');
+const transcriptEl = document.getElementById('transcript');
+const meterFill = document.getElementById('meter-fill');
+const statBuffer = document.getElementById('stat-buffer');
+const statChunks = document.getElementById('stat-chunks');
+const statLatency = document.getElementById('stat-latency');
+const cfgBuffer = document.getElementById('cfg-buffer');
+const cfgUrl = document.getElementById('cfg-url');
+
+// Auto-detect WS URL (WebSocket runs on HTTP port + 1)
+const wsPort = parseInt(location.port || '7860') + 1;
+const wsDefaultUrl = `ws://${location.hostname}:${wsPort}/ws/tts`;
+cfgUrl.placeholder = wsDefaultUrl;
+
+function log(msg) {
+  const ts = new Date().toLocaleTimeString('en-US', {hour12:false, fractionalSecondDigits:1});
+  statusEl.textContent += `[${ts}] ${msg}\n`;
+  statusEl.scrollTop = statusEl.scrollHeight;
+}
+
+async function initAudio() {
+  if (audioCtx && audioCtx.state !== 'closed') return;
+  audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+  try {
+    await audioCtx.audioWorklet.addModule('/worklet.js');
+    workletNode = new AudioWorkletNode(audioCtx, 'pcm-player-processor');
+    workletNode.port.onmessage = (e) => {
+      const bufMs = (e.data.bufferSamples / SAMPLE_RATE * 1000).toFixed(0);
+      statBuffer.textContent = bufMs + 'ms';
+      meterFill.style.width = Math.min(100, e.data.bufferSamples / SAMPLE_RATE * 100 / 2) + '%';
+    };
+    workletNode.connect(audioCtx.destination);
+    log('AudioWorklet initialized (24kHz mono)');
+  } catch (e) {
+    log('AudioWorklet failed: ' + e.message + '. Falling back to ScriptProcessor.');
+    // Fallback: ScriptProcessorNode
+    workletNode = null;
+    initScriptProcessor();
+  }
+}
+
+// Fallback for browsers that block AudioWorklet on non-localhost
+let scriptNode = null;
+let pcmQueue = new Float32Array(0);
+function initScriptProcessor() {
+  scriptNode = audioCtx.createScriptProcessor(4096, 0, 1);
+  scriptNode.onaudioprocess = (e) => {
+    const output = e.outputBuffer.getChannelData(0);
+    if (pcmQueue.length >= output.length) {
+      output.set(pcmQueue.subarray(0, output.length));
+      pcmQueue = pcmQueue.slice(output.length);
+    } else {
+      output.fill(0);
+    }
+    const bufMs = (pcmQueue.length / SAMPLE_RATE * 1000).toFixed(0);
+    statBuffer.textContent = bufMs + 'ms';
+    meterFill.style.width = Math.min(100, pcmQueue.length / SAMPLE_RATE * 100 / 2) + '%';
+  };
+  scriptNode.connect(audioCtx.destination);
+  log('ScriptProcessor fallback initialized (24kHz mono)');
+}
+
+function feedAudio(samples) {
+  if (workletNode) {
+    workletNode.port.postMessage({ type: 'audio', samples: samples });
+  } else {
+    const old = pcmQueue;
+    pcmQueue = new Float32Array(old.length + samples.length);
+    pcmQueue.set(old);
+    pcmQueue.set(samples, old.length);
+  }
+}
+
+function clearAudio() {
+  if (workletNode) {
+    workletNode.port.postMessage({ type: 'clear' });
+  } else {
+    pcmQueue = new Float32Array(0);
+  }
+}
+
+function getWsUrl() {
+  return cfgUrl.value.trim() || wsDefaultUrl;
+}
+
+let jitterBuffering = false;
+let jitterTimeout = null;
+
+async function startSpeaking() {
+  const text = textInput.value.trim();
+  if (!text) { log('Text is empty.'); return; }
+
+  try {
+    await initAudio();
+  } catch (e) {
+    log('Audio init error: ' + e.message);
+    return;
+  }
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+  // Clear previous
+  clearAudio();
+  transcriptEl.textContent = '';
+  chunkCount = 0;
+  statChunks.textContent = '0';
+  statLatency.textContent = '—';
+  jitterBuffering = true;
+
+  btnSpeak.disabled = true;
+  btnStop.disabled = false;
+  playing = true;
+
+  const wsUrl = getWsUrl();
+  log(`Connecting to ${wsUrl}`);
+  requestTime = performance.now();
+
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    log('Connected. Sending text...');
+    ws.send(JSON.stringify({
+      text: text,
+      task: taskSelect.value,
+    }));
+  };
+
+  ws.onmessage = (event) => {
+    if (typeof event.data === 'string') {
+      // JSON control message (transcript update or done signal)
+      const msg = JSON.parse(event.data);
+      if (msg.transcript) {
+        transcriptEl.textContent = msg.transcript;
+      }
+      if (msg.done) {
+        log(`Stream complete. Total chunks: ${chunkCount}`);
+        stopSpeaking(false);
+      }
+      if (msg.error) {
+        log(`ERROR: ${msg.error}`);
+        stopSpeaking(false);
+      }
+    } else {
+      // Binary PCM data (float32, 24kHz mono)
+      const samples = new Float32Array(event.data);
+      chunkCount++;
+      statChunks.textContent = chunkCount;
+
+      if (chunkCount === 1) {
+        firstChunkTime = performance.now();
+        const latency = (firstChunkTime - requestTime).toFixed(0);
+        statLatency.textContent = latency + 'ms';
+        log(`First chunk received (latency: ${latency}ms, ${samples.length} samples)`);
+      }
+
+      feedAudio(samples);
+
+      // Jitter buffer: suspend AudioContext until enough buffered
+      if (jitterBuffering) {
+        const bufferMs = parseInt(cfgBuffer.value) || 300;
+        const samplesNeeded = (bufferMs / 1000) * SAMPLE_RATE;
+        // Approximate: each chunk contributes samples.length
+        if (chunkCount * samples.length >= samplesNeeded) {
+          jitterBuffering = false;
+          audioCtx.resume();
+          log(`Jitter buffer filled (${bufferMs}ms). Playback started.`);
+        } else {
+          audioCtx.suspend();
+        }
+      }
+    }
+  };
+
+  ws.onerror = (e) => {
+    log('WebSocket error: ' + (e.message || 'connection failed'));
+    stopSpeaking(false);
+  };
+
+  ws.onclose = () => {
+    if (playing) {
+      log('WebSocket closed');
+      stopSpeaking(false);
+    }
+  };
+}
+
+function stopSpeaking(sendClose = true) {
+  playing = false;
+  btnSpeak.disabled = false;
+  btnStop.disabled = true;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    if (sendClose) ws.send(JSON.stringify({ stop: true }));
+    ws.close();
+  }
+  ws = null;
+}
+
+btnSpeak.addEventListener('click', startSpeaking);
+btnStop.addEventListener('click', () => stopSpeaking(true));
+
+// Enter to submit
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.ctrlKey) {
+    e.preventDefault();
+    startSpeaking();
+  }
+});
+</script>
+</body>
+</html>

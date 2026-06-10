@@ -1,0 +1,2 @@
+notebooks/minicpm-o-4.5/token2wav_chunk_ov/*.bin filter=lfs diff=lfs merge=lfs -text
+notebooks/minicpm-o-4.5/token2wav_chunk_ov/*.onnx filter=lfs diff=lfs merge=lfs -text

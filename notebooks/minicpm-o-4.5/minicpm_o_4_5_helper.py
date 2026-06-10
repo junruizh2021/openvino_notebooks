@@ -115,6 +115,28 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 # OpenVINO core
 core = Core()
 
+
+def _make_ov_config(performance_hint: str | None = "LATENCY", cache_dir: str | Path | None = None) -> dict:
+    """Build a compact OpenVINO compile config."""
+    config = {}
+    if performance_hint:
+        config["PERFORMANCE_HINT"] = performance_hint
+    if cache_dir:
+        cache_dir = Path(cache_dir)
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            config["CACHE_DIR"] = str(cache_dir)
+        except OSError as exc:
+            print(f"⚠️ OpenVINO cache disabled: cannot write to {cache_dir}: {exc}")
+    return config
+
+
+def _compile_model(model, device: str, ov_config: dict | None = None):
+    """Compile an OpenVINO model/path with an optional config."""
+    if ov_config:
+        return core.compile_model(model, device, ov_config)
+    return core.compile_model(model, device)
+
 # File naming conventions for MiniCPM-o-4_5
 LLM_EMBEDDING_NAME = "openvino_llm_embedding_model.xml"
 LLM_LANGUAGE_NAME = "openvino_llm_language_model.xml"
@@ -131,6 +153,7 @@ TTS_CODE_HEAD_NAME = "openvino_tts_code_head_model.xml"
 
 # Token2wav (audio_tokenizer) model names
 FLOW_EMBEDDINGS_NAME = "openvino_flow_embeddings_model.xml"
+FLOW_ESTIMATOR_NAME = "openvino_flow_estimator_model.xml"
 FLOW_ENCODER_CHUNK_NAME = "openvino_flow_encoder_chunk_model.xml"
 FLOW_ESTIMATOR_CHUNK_NAME = "openvino_flow_estimator_chunk_model.xml"
 HIFT_NAME = "openvino_hift_model.xml"
@@ -417,16 +440,20 @@ def convert_minicpmo_model(
     # Extract vision and llm specific quantization configs
     vision_quantization_config = None
     llm_quantization_config = None
+    text_llm_quantization_config = None
+    tts_quantization_config = None
     if quantization_config is not None:
         if isinstance(quantization_config, dict):
             vision_quantization_config = quantization_config.get("vision")
             llm_quantization_config = quantization_config.get("llm")
             text_llm_quantization_config = quantization_config.get("text")
+            tts_quantization_config = quantization_config.get("tts")
         else:
             # Fallback: if quantization_config is not a dict with keys, use it for both
             vision_quantization_config = quantization_config
             llm_quantization_config = quantization_config
             text_llm_quantization_config = quantization_config
+            tts_quantization_config = None
 
     # Define all model paths
     llm_embedding_path = output_path / LLM_EMBEDDING_NAME
@@ -579,10 +606,11 @@ def convert_minicpmo_model(
             convert_tts_text_embedding(model, tts_embedding_path)
             print("✅ TTS Text Embedding model successfully converted")
 
-        # 8. Convert TTS Language Model (No quantization for TTS)
+        # 8. Convert TTS Language Model. Keep FP by default; pass quantization_config["tts"]
+        # to trade some quality risk for lower latency and memory.
         if not tts_language_path.exists():
             print("⌛ Converting TTS Language model...")
-            convert_tts_language_model(model, tts_language_path, quantization_config=None)
+            convert_tts_language_model(model, tts_language_path, quantization_config=tts_quantization_config)
             print("✅ TTS Language model successfully converted")
 
         # 9. Convert TTS Projector (Speaker)
@@ -1910,7 +1938,18 @@ def convert_flow_encoder_chunk(token2wav_model, output_path: Path):
             embedding = F.normalize(embedding, dim=1)
             spks = self.spk_embed_affine_layer(embedding)
             token = self.input_embedding(torch.clamp(token, min=0))
-            h, new_cnn_cache, new_att_cache = self.encoder.forward_chunk(token, last_chunk=False, cnn_cache=cnn_cache, att_cache=att_cache)
+            forward_chunk = self.encoder.forward_chunk
+            orig_forward_chunk = getattr(forward_chunk, "_torchdynamo_orig_callable", None)
+            if orig_forward_chunk is not None:
+                h, new_cnn_cache, new_att_cache = orig_forward_chunk(
+                    self.encoder,
+                    token,
+                    last_chunk=False,
+                    cnn_cache=cnn_cache,
+                    att_cache=att_cache,
+                )
+            else:
+                h, new_cnn_cache, new_att_cache = forward_chunk(token, last_chunk=False, cnn_cache=cnn_cache, att_cache=att_cache)
             h = self.encoder_proj(h)
             return h, spks, new_cnn_cache, new_att_cache
 
@@ -2264,10 +2303,16 @@ def convert_token2wav(
         if "cosyvoice2.flow.flow" in sys.modules:
             return
 
-        import stepaudio2.cosyvoice2.flow.flow as _step_flow
-        import stepaudio2.cosyvoice2.flow.flow_matching as _step_flow_matching
-        import stepaudio2.cosyvoice2.flow.decoder_dit as _step_decoder_dit
-        import stepaudio2.cosyvoice2.transformer.upsample_encoder_v2 as _step_upsample
+        try:
+            import stepaudio2.cosyvoice2.flow.flow as _step_flow
+            import stepaudio2.cosyvoice2.flow.flow_matching as _step_flow_matching
+            import stepaudio2.cosyvoice2.flow.decoder_dit as _step_decoder_dit
+            import stepaudio2.cosyvoice2.transformer.upsample_encoder_v2 as _step_upsample
+        except ModuleNotFoundError:
+            import cosyvoice2.flow.flow as _step_flow
+            import cosyvoice2.flow.flow_matching as _step_flow_matching
+            import cosyvoice2.flow.decoder_dit as _step_decoder_dit
+            import cosyvoice2.transformer.upsample_encoder_v2 as _step_upsample
 
         cosyvoice2_pkg = types.ModuleType("cosyvoice2")
         cosyvoice2_flow_pkg = types.ModuleType("cosyvoice2.flow")
@@ -2293,7 +2338,10 @@ def convert_token2wav(
 
     # Load Token2wav model
     from hyperpyyaml import load_hyperpyyaml
-    from stepaudio2.flashcosyvoice.modules.hifigan import HiFTGenerator
+    try:
+        from stepaudio2.flashcosyvoice.modules.hifigan import HiFTGenerator
+    except ModuleNotFoundError:
+        from flashcosyvoice.modules.hifigan import HiFTGenerator
 
     print("⌛ Loading Token2wav model...")
 
@@ -2866,8 +2914,8 @@ class OVAudioProjection:
 class OVTTSEmbedding:
     """OpenVINO wrapper for TTS embedding model."""
 
-    def __init__(self, model_path, device):
-        self.model = Core().compile_model(model_path, device)
+    def __init__(self, model_path, device, ov_config: dict | None = None):
+        self.model = _compile_model(model_path, device, ov_config)
         self.request = self.model.create_infer_request()
         # Get actual input name (typically 'input')
         self._input_name = self.model.inputs[0].get_any_name()
@@ -2904,8 +2952,8 @@ class OVTTSLanguageModel:
     - Cache only needs reset between TTS generation sessions
     """
 
-    def __init__(self, model_path, device):
-        self.model = Core().compile_model(model_path, device)
+    def __init__(self, model_path, device, ov_config: dict | None = None):
+        self.model = _compile_model(model_path, device, ov_config)
         self.request = self.model.create_infer_request()
         self.input_names = {input_t.get_any_name() for input_t in self.model.inputs}
         self.output_names = {output_t.get_any_name() for output_t in self.model.outputs}
@@ -2999,8 +3047,8 @@ class OVTTSLanguageModel:
 class OVTTSProjectorSpk:
     """OpenVINO wrapper for TTS speaker projector."""
 
-    def __init__(self, model_path, device):
-        self.model = Core().compile_model(model_path, device)
+    def __init__(self, model_path, device, ov_config: dict | None = None):
+        self.model = _compile_model(model_path, device, ov_config)
         self.request = self.model.create_infer_request()
         # Get actual input name (typically 'audio_features')
         self._input_name = self.model.inputs[0].get_any_name()
@@ -3024,8 +3072,8 @@ class OVTTSProjectorSpk:
 class OVTTSProjectorSemantic:
     """OpenVINO wrapper for TTS semantic projector."""
 
-    def __init__(self, model_path, device):
-        self.model = Core().compile_model(model_path, device)
+    def __init__(self, model_path, device, ov_config: dict | None = None):
+        self.model = _compile_model(model_path, device, ov_config)
         self.request = self.model.create_infer_request()
         # Get actual input name (typically 'audio_features')
         self._input_name = self.model.inputs[0].get_any_name()
@@ -3053,8 +3101,8 @@ class OVTTSProjectorSemantic:
 class OVTTSCodeEmbedding:
     """OpenVINO wrapper for TTS code embedding."""
 
-    def __init__(self, model_path, device):
-        self.model = Core().compile_model(model_path, device)
+    def __init__(self, model_path, device, ov_config: dict | None = None):
+        self.model = _compile_model(model_path, device, ov_config)
         self.request = self.model.create_infer_request()
         # Get actual input name (may be auto-generated like '13')
         self._input_name = self.model.inputs[0].get_any_name()
@@ -3074,8 +3122,8 @@ class OVTTSCodeEmbedding:
 class OVTTSCodeHead:
     """OpenVINO wrapper for TTS code head."""
 
-    def __init__(self, model_path, device):
-        self.model = Core().compile_model(model_path, device)
+    def __init__(self, model_path, device, ov_config: dict | None = None):
+        self.model = _compile_model(model_path, device, ov_config)
         self.request = self.model.create_infer_request()
 
     def __call__(self, hidden_states):
@@ -3172,6 +3220,10 @@ class OVLLMForCausalLM(GenerationMixin):
     def can_generate(self):
         """Returns True to validate GenerationMixin.generate() can be used."""
         return True
+
+    def is_remote_code(self):
+        """Return False for Transformers GenerationMixin remote-code checks."""
+        return False
 
     def reset_state(self):
         """Reset KV cache state."""
@@ -3316,6 +3368,9 @@ class OVMiniCPMO:
         model_path: str,
         device: str = "CPU",
         tts_device: str = None,
+        ov_config: dict | None = None,
+        tts_ov_config: dict | None = None,
+        tts_flow_device: str | None = None,
         dtype=torch.float32,
     ):
         """
@@ -3333,12 +3388,18 @@ class OVMiniCPMO:
             model_path: Path to converted OpenVINO models
             device: OpenVINO device for LLM/vision (CPU, GPU, NPU)
             tts_device: OpenVINO device for TTS (defaults to device)
+            ov_config: OpenVINO compile config for non-TTS submodels
+            tts_ov_config: OpenVINO compile config for TTS submodels
+            tts_flow_device: OpenVINO device for Flow embedding/encoder helper submodels
             dtype: Computation dtype
         """
         self.model_path = Path(model_path)
         self.device = torch.device("cpu")
         self._ov_device = device
         self.tts_device = tts_device or device
+        self.ov_config = ov_config or {}
+        self.tts_ov_config = tts_ov_config or self.ov_config
+        self.tts_flow_device = tts_flow_device or self.tts_device
         self.dtype = dtype
 
         # Load processor/tokenizer/config (aligned with original prepare_processor)
@@ -3489,12 +3550,12 @@ class OVMiniCPMO:
         Returns:
             OVTTSModel wrapping all TTS OV submodels.
         """
-        tts_embedding = OVTTSEmbedding(self.model_path / TTS_EMBEDDING_NAME, self.tts_device)
-        tts_llm = OVTTSLanguageModel(self.model_path / TTS_LANGUAGE_NAME, self.tts_device)
-        tts_projector_spk = OVTTSProjectorSpk(self.model_path / TTS_PROJECTOR_SPK_NAME, self.tts_device)
-        tts_projector_semantic = OVTTSProjectorSemantic(self.model_path / TTS_PROJECTOR_SEMANTIC_NAME, self.tts_device)
-        tts_code_embedding = OVTTSCodeEmbedding(self.model_path / TTS_CODE_EMBEDDING_NAME, self.tts_device)
-        tts_code_head = OVTTSCodeHead(self.model_path / TTS_CODE_HEAD_NAME, self.tts_device)
+        tts_embedding = OVTTSEmbedding(self.model_path / TTS_EMBEDDING_NAME, self.tts_device, self.tts_ov_config)
+        tts_llm = OVTTSLanguageModel(self.model_path / TTS_LANGUAGE_NAME, self.tts_device, self.tts_ov_config)
+        tts_projector_spk = OVTTSProjectorSpk(self.model_path / TTS_PROJECTOR_SPK_NAME, self.tts_device, self.tts_ov_config)
+        tts_projector_semantic = OVTTSProjectorSemantic(self.model_path / TTS_PROJECTOR_SEMANTIC_NAME, self.tts_device, self.tts_ov_config)
+        tts_code_embedding = OVTTSCodeEmbedding(self.model_path / TTS_CODE_EMBEDDING_NAME, self.tts_device, self.tts_ov_config)
+        tts_code_head = OVTTSCodeHead(self.model_path / TTS_CODE_HEAD_NAME, self.tts_device, self.tts_ov_config)
         print("  ✅ TTS Models loaded")
 
         tts = OVTTSModel.__new__(OVTTSModel)
@@ -3526,7 +3587,16 @@ class OVMiniCPMO:
 
         return tts
 
-    def init_tts(self, streaming=False, model_dir=None, enable_float16=False, n_timesteps=10, hift_input_len=0):
+    def init_tts(
+        self,
+        streaming=False,
+        model_dir=None,
+        enable_float16=False,
+        n_timesteps=3,
+        hift_input_len=0,
+        flow_aux_device: str | None = None,
+        ov_config: dict | None = None,
+    ):
         """Initialize TTS audio tokenizer (aligned with original MiniCPMO.init_tts).
 
         For OV, creates OVToken2wav instead of the original Token2wav/CosyVoice.
@@ -3540,6 +3610,9 @@ class OVMiniCPMO:
                            When 0 and tts_device is GPU, auto-set to 64
                            (25 tokens → 56 mel frames + 8 cache = 64) to avoid
                            dynamic shape recompilation stalls.
+            flow_aux_device: Device for Flow embedding/encoder helper submodels.
+                             Defaults to self.tts_flow_device.
+            ov_config: OpenVINO compile config for token2wav submodels.
 
         Returns:
             The audio tokenizer (OVToken2wav)
@@ -3571,6 +3644,8 @@ class OVMiniCPMO:
             float16=enable_float16,
             n_timesteps=n_timesteps,
             hift_input_len=hift_input_len,
+            flow_aux_device=flow_aux_device or self.tts_flow_device,
+            ov_config=ov_config or self.tts_ov_config,
             # flow_emb_token_len=50,
             # flow_emb_prompt_len=200,
         )
@@ -3899,6 +3974,10 @@ class OVMiniCPMO:
         top_k_llm = kwargs.get("top_k", 100)
         rep_penalty_llm = kwargs.get("repetition_penalty", 1.05)
         length_penalty = kwargs.get("length_penalty", 1.0)
+        interrupt_event = kwargs.get("interrupt_event")
+
+        def _interrupted():
+            return interrupt_event is not None and interrupt_event.is_set()
 
         # ============================================================
         # Inner generator: chunk-based LLM text + TTS audio tokens
@@ -3974,6 +4053,8 @@ class OVMiniCPMO:
 
             # ---- LLM chunk generation outer loop (aligned with original) ----
             for chunk_idx in range(num_chunks_decode):
+                if _interrupted():
+                    return
                 is_first_chunk = chunk_idx == 0
                 chunk_size = generate_chunk_size + (1 if is_first_chunk else 0)
 
@@ -3986,6 +4067,8 @@ class OVMiniCPMO:
                 PENALTY_WINDOW_SIZE = 128
 
                 for token_idx in range(chunk_size):
+                    if _interrupted():
+                        return
                     if is_first_chunk and token_idx == 0:
                         # First chunk: prefill all bos embeddings
                         model_inputs = {
@@ -4137,6 +4220,8 @@ class OVMiniCPMO:
                     tts_finished = False
 
                     for t in range(500):  # max 500 audio tokens per condition
+                        if _interrupted():
+                            return
                         if t == 0:
                             tts_inputs_embeds = condition
                             tts_pos_ids = torch.arange(tts_past_length, tts_past_length + condition_length, dtype=torch.long).unsqueeze(0)
@@ -4254,6 +4339,8 @@ class OVMiniCPMO:
             prev_text_len = 0
 
             for audio_token_chunk, is_last_audio_chunk in audio_gen:
+                if _interrupted():
+                    break
                 if audio_token_chunk is None:
                     break
 
@@ -4283,6 +4370,10 @@ class OVMiniCPMO:
                     buffer = buffer[CHUNK_SIZE:]
 
             # Flush remaining buffer
+            if _interrupted():
+                yield None, None
+                return
+
             if len(buffer) > 0:
                 waveform_chunk = self.token2wav.stream(
                     buffer,
@@ -4304,6 +4395,8 @@ class OVMiniCPMO:
             yielded_text_len = 0
 
             for token_ids, is_finished in audio_gen:
+                if _interrupted():
+                    break
                 if torch.is_tensor(token_ids):
                     accumulated_token_ids.extend(token_ids.reshape(-1).tolist())
 
@@ -6023,7 +6116,7 @@ class OVMiniCPMODuplex:
         "tts_temperature": 0.8,
         "tts_repetition_penalty": 1.05,
         "enable_float16": False,
-        "n_timesteps": 10,
+        "n_timesteps": 3,
         "chunk_ms": 1000,
         "first_chunk_ms": 1035,
         "cnn_redundancy_ms": 20,
@@ -6071,6 +6164,9 @@ class OVMiniCPMODuplex:
         instance.device = model.device
         instance._ov_device = model._ov_device
         instance.tts_device = model.tts_device
+        instance.tts_flow_device = model.tts_flow_device
+        instance.ov_config = model.ov_config
+        instance.tts_ov_config = model.tts_ov_config
         instance.dtype = model.dtype
         instance.model_path = model.model_path
 
@@ -7493,6 +7589,8 @@ class OVFlow:
         self,
         model_dir: str,
         device: str = "CPU",
+        flow_aux_device: str | None = None,
+        ov_config: dict | None = None,
         up_rate: int = 2,
         output_size: int = 80,
         n_timesteps: int = 10,
@@ -7511,6 +7609,8 @@ class OVFlow:
         """
         self.model_dir = Path(model_dir)
         self.ov_device = device
+        self.flow_aux_device = flow_aux_device or device
+        self.ov_config = ov_config or {}
 
         # Flow parameters
         self.up_rate = up_rate
@@ -7524,28 +7624,40 @@ class OVFlow:
         # Load OpenVINO flow embeddings model
         flow_emb_path = self.model_dir / FLOW_EMBEDDINGS_NAME
         print(f"⌛ Loading OpenVINO Flow embeddings model from {flow_emb_path}...")
-        self.flow_embeddings = core.compile_model(str(flow_emb_path), "CPU")
-        print(f"✅ Flow embeddings model loaded")
+        self.flow_embeddings = _compile_model(str(flow_emb_path), self.flow_aux_device, self.ov_config)
+        print(f"✅ Flow embeddings model loaded on {self.flow_aux_device}")
 
-        # Load OpenVINO flow estimator chunk model (DiT with KV cache I/O)
-        # This unified model serves both streaming (with caches) and non-streaming
-        # (with empty caches) inference — verified to be bit-identical to the legacy
-        # full estimator when att_cache T=0, saving one model from memory.
+        # Prefer the chunk estimator when present. Older converted directories
+        # contain only the full estimator, which supports non-streaming TTS.
         flow_est_chunk_path = self.model_dir / FLOW_ESTIMATOR_CHUNK_NAME
-        print(f"⌛ Loading OpenVINO Flow estimator model from {flow_est_chunk_path}...")
-        self.flow_estimator_chunk = core.compile_model(str(flow_est_chunk_path), device)
-        print(f"✅ Flow estimator model loaded")
+        flow_est_path = self.model_dir / FLOW_ESTIMATOR_NAME
+        self.flow_estimator_chunk = None
+        self.flow_estimator = None
+        if flow_est_chunk_path.exists():
+            print(f"⌛ Loading OpenVINO Flow estimator model from {flow_est_chunk_path}...")
+            self.flow_estimator_chunk = _compile_model(str(flow_est_chunk_path), device, self.ov_config)
+            print(f"✅ Flow estimator model loaded on {device}")
+        elif flow_est_path.exists():
+            print(f"⌛ Loading OpenVINO Flow estimator model from {flow_est_path}...")
+            self.flow_estimator = _compile_model(str(flow_est_path), device, self.ov_config)
+            print(f"✅ Flow estimator model loaded on {device} (non-streaming compatibility mode)")
+        else:
+            raise FileNotFoundError(
+                f"Could not find {FLOW_ESTIMATOR_CHUNK_NAME} or {FLOW_ESTIMATOR_NAME} in {self.model_dir}"
+            )
 
         # Load streaming encoder chunk model (if available)
         self.flow_encoder_chunk = None
         self.streaming_available = False
 
         flow_enc_chunk_path = self.model_dir / FLOW_ENCODER_CHUNK_NAME
-        if flow_enc_chunk_path.exists():
+        if flow_enc_chunk_path.exists() and self.flow_estimator_chunk is not None:
             print(f"⌛ Loading streaming flow encoder chunk model...")
-            self.flow_encoder_chunk = core.compile_model(str(flow_enc_chunk_path), "CPU")
+            self.flow_encoder_chunk = _compile_model(str(flow_enc_chunk_path), self.flow_aux_device, self.ov_config)
             self.streaming_available = True
-            print(f"✅ Streaming flow encoder chunk model loaded")
+            print(f"✅ Streaming flow encoder chunk model loaded on {self.flow_aux_device}")
+        elif flow_enc_chunk_path.exists():
+            print("⚠️ Streaming flow encoder chunk model found, but estimator chunk model is missing; streaming Token2wav is disabled.")
 
         # Pre-generate random noise for deterministic inference
         self._init_rand_noise()
@@ -7583,7 +7695,7 @@ class OVFlow:
                     "embedding": [1, 192],
                 }
             )
-            self.flow_embeddings = core.compile_model(model, self.ov_device)
+            self.flow_embeddings = _compile_model(model, self.flow_aux_device, self.ov_config)
             print(f"  📐 Reshaped flow_embeddings: token=[1,{flow_emb_token_len}], prompt=[1,{flow_emb_prompt_len}]")
         else:
             self.flow_emb_token_len = 0
@@ -7651,18 +7763,30 @@ class OVFlow:
         Returns:
             Estimated velocity field (batch, output_size, mel_len)
         """
-        cnn_cache = torch.zeros([16, 2, 1024, 2], dtype=torch.float32)
-        att_cache = torch.zeros([16, 2, 8, 0, 128], dtype=torch.float32)
-        inputs = {
-            "x": x,
-            "mu": mu,
-            "t": t,
-            "spks": spks,
-            "cond": cond,
-            "cnn_cache": cnn_cache,
-            "att_cache": att_cache,
-        }
-        result = self.flow_estimator_chunk(inputs)
+        if self.flow_estimator_chunk is not None:
+            cnn_cache = torch.zeros([16, 2, 1024, 2], dtype=torch.float32)
+            att_cache = torch.zeros([16, 2, 8, 0, 128], dtype=torch.float32)
+            inputs = {
+                "x": x,
+                "mu": mu,
+                "t": t,
+                "spks": spks,
+                "cond": cond,
+                "cnn_cache": cnn_cache,
+                "att_cache": att_cache,
+            }
+            result = self.flow_estimator_chunk(inputs)
+        else:
+            mask = torch.ones([x.shape[0], 1, x.shape[2]], device=x.device, dtype=x.dtype)
+            inputs = {
+                "x": x,
+                "mask": mask,
+                "mu": mu,
+                "t": t,
+                "spks": spks,
+                "cond": cond,
+            }
+            result = self.flow_estimator(inputs)
         return torch.from_numpy(result[0].copy())
 
     def _solve_euler(self, z, t_span, mu, mask, spks, cond):
@@ -8025,7 +8149,7 @@ class OVHiFT:
     This avoids dynamic shape recompilation on GPU.
     """
 
-    def __init__(self, model_path: str, device: str = "CPU", hift_input_len: int = 0):
+    def __init__(self, model_path: str, device: str = "CPU", hift_input_len: int = 0, ov_config: dict | None = None):
         """
         Initialize OVHiFT with OpenVINO model.
 
@@ -8041,6 +8165,7 @@ class OVHiFT:
         self.model_path = Path(model_path)
         self.ov_device = device
         self.hift_input_len = hift_input_len
+        self.ov_config = ov_config or {}
 
         # Source cache length (must match export-time SOURCE_CACHE_LEN)
         self.source_cache_len_fixed = 3840
@@ -8068,7 +8193,7 @@ class OVHiFT:
 
         if not self._has_cache_source:
             print("  ⚠️ Legacy HiFT model (no cache_source). Re-export with reexport_hift.py for streaming audio continuity.")
-        self.hift = core.compile_model(model, device)
+        self.hift = _compile_model(model, device, self.ov_config)
         print(f"✅ HiFT model loaded on {device}")
 
         # ISTFT parameters (matching HiFTGenerator defaults)
@@ -8200,6 +8325,8 @@ class OVToken2wav:
         hift_input_len: int = 0,
         flow_emb_token_len: int = 0,
         flow_emb_prompt_len: int = 0,
+        flow_aux_device: str | None = None,
+        ov_config: dict | None = None,
     ):
         """
         Initialize OVToken2wav with OpenVINO models.
@@ -8216,6 +8343,8 @@ class OVToken2wav:
         """
         self.model_dir = Path(model_dir)
         self.ov_device = device
+        self.flow_aux_device = flow_aux_device or device
+        self.ov_config = ov_config or {}
         self.float16 = float16
         self.n_timesteps = n_timesteps
 
@@ -8223,6 +8352,8 @@ class OVToken2wav:
         self.flow = OVFlow(
             model_dir=model_dir,
             device=device,
+            flow_aux_device=self.flow_aux_device,
+            ov_config=self.ov_config,
             up_rate=2,  # Default for stepaudio2
             output_size=80,
             n_timesteps=n_timesteps,
@@ -8233,7 +8364,7 @@ class OVToken2wav:
             self.flow.set_fixed_shapes(flow_emb_token_len, flow_emb_prompt_len)
 
         # Load HiFT vocoder (with optional fixed shape)
-        self.hift = OVHiFT(model_path=model_dir, device=device, hift_input_len=hift_input_len)
+        self.hift = OVHiFT(model_path=model_dir, device=device, hift_input_len=hift_input_len, ov_config=self.ov_config)
 
         # Load s3tokenizer ONNX model
         s3tok_path = self.model_dir / "speech_tokenizer_v2_25hz.onnx"
@@ -8254,11 +8385,11 @@ class OVToken2wav:
 
         if campplus_ir_path.exists():
             print(f"⌛ Loading campplus model (OpenVINO IR)...")
-            self.spk_model = core.compile_model(str(campplus_ir_path), device)
+            self.spk_model = _compile_model(str(campplus_ir_path), device, self.ov_config)
             print(f"✅ campplus model loaded (OpenVINO IR)")
         elif campplus_onnx_path.exists():
             print(f"⌛ Loading campplus model (ONNX via OpenVINO)...")
-            self.spk_model = core.compile_model(str(campplus_onnx_path), device)
+            self.spk_model = _compile_model(str(campplus_onnx_path), device, self.ov_config)
             print(f"✅ campplus model loaded (ONNX)")
         else:
             self.spk_model = None
@@ -8279,12 +8410,16 @@ class OVToken2wav:
 
     def _prepare_prompt(self, prompt_wav):
         """Prepare prompt data from audio file."""
+        import librosa
         import s3tokenizer
-        import torchaudio
         import torchaudio.compliance.kaldi as kaldi
-        from stepaudio2.flashcosyvoice.utils.audio import mel_spectrogram
+        try:
+            from stepaudio2.flashcosyvoice.utils.audio import mel_spectrogram
+        except ModuleNotFoundError:
+            from flashcosyvoice.utils.audio import mel_spectrogram
 
-        audio = s3tokenizer.load_audio(prompt_wav, sr=16000)  # [T]
+        audio_np, _ = librosa.load(prompt_wav, sr=16000, mono=True)
+        audio = torch.from_numpy(audio_np).float()  # [T]
         mels = s3tokenizer.log_mel_spectrogram(audio)
         mels, mels_lens = s3tokenizer.padding([mels])
         prompt_speech_tokens, prompt_speech_tokens_lens = self.audio_tokenizer.quantize(mels.cpu(), mels_lens.cpu())
@@ -8296,10 +8431,8 @@ class OVToken2wav:
         spk_result = self.spk_model(spk_input)
         spk_emb = torch.tensor(spk_result[0], device="cpu")
 
-        audio, sample_rate = torchaudio.load(prompt_wav, backend="soundfile")
-        audio = audio.mean(dim=0, keepdim=True)  # [1, T]
-        if sample_rate != 24000:
-            audio = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=24000)(audio)
+        audio_24k, _ = librosa.load(prompt_wav, sr=24000, mono=True)
+        audio = torch.from_numpy(audio_24k).float().unsqueeze(0)  # [1, T]
         prompt_mel = mel_spectrogram(audio).transpose(1, 2).squeeze(0)  # [T, num_mels]
         prompt_mels = prompt_mel.unsqueeze(0).cpu()
         prompt_mels_lens = torch.tensor([prompt_mels.shape[1]], dtype=torch.int32, device="cpu")
